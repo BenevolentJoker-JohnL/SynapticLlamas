@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# Logs and outputs
+*.log
+logs/
+outputs/
+benchmarks/
+
+# Config (will be mounted as volume)
+node_config.json
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Docs (not needed in runtime)
+*.md
+!README.md
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
