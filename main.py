@@ -318,15 +318,31 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
             # Dashboard command
             elif command == 'dashboard':
                 print("🚀 Launching SOLLOL Dashboard on http://localhost:8080")
-                print("   Opening in background...")
-                print("   Press Ctrl+C in dashboard terminal to stop\n")
-                import subprocess
+                print("   Running in background thread...\n")
                 import threading
-                def run_dashboard():
-                    subprocess.run(['python3', 'dashboard_server.py'])
-                dashboard_thread = threading.Thread(target=run_dashboard, daemon=True)
+                import sys
+                import os
+
+                # Suppress Flask/Waitress logs
+                import logging as log
+                log.getLogger('werkzeug').setLevel(log.ERROR)
+                log.getLogger('waitress').setLevel(log.ERROR)
+
+                def run_dashboard_thread():
+                    # Import here to avoid circular imports
+                    sys.path.insert(0, os.getcwd())
+                    from dashboard_server import run_dashboard
+                    run_dashboard(host='0.0.0.0', port=8080, production=True)
+
+                dashboard_thread = threading.Thread(target=run_dashboard_thread, daemon=True, name="DashboardServer")
                 dashboard_thread.start()
-                print("✅ Dashboard started! Open http://localhost:8080 in your browser\n")
+
+                import time
+                time.sleep(1)  # Give server time to start
+
+                print("✅ Dashboard started in background!")
+                print("   Open http://localhost:8080 in your browser")
+                print("   Dashboard will auto-shutdown when you exit SynapticLlamas\n")
 
             # Handle metrics
             elif command == 'metrics':

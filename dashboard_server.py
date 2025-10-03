@@ -137,18 +137,31 @@ def health():
     return jsonify({'status': 'ok', 'service': 'sollol-dashboard'})
 
 
-def run_dashboard(host='0.0.0.0', port=8080):
+def run_dashboard(host='0.0.0.0', port=8080, production=True):
     """
     Run the dashboard server.
 
     Args:
         host: Host to bind to (default: 0.0.0.0)
         port: Port to bind to (default: 8080)
+        production: Use production WSGI server (default: True)
     """
     logger.info(f"🚀 Starting SOLLOL Dashboard on http://{host}:{port}")
     logger.info(f"   Dashboard: http://{host}:{port}/")
     logger.info(f"   API Stats: http://{host}:{port}/api/dashboard")
-    app.run(host=host, port=port, debug=False)
+
+    if production:
+        try:
+            # Use waitress for production (pure Python, cross-platform)
+            from waitress import serve
+            logger.info("   Using Waitress production server")
+            serve(app, host=host, port=port, threads=4, _quiet=True)
+        except ImportError:
+            logger.warning("   Waitress not installed, falling back to Flask dev server")
+            logger.warning("   Install waitress for production: pip install waitress")
+            app.run(host=host, port=port, debug=False, use_reloader=False)
+    else:
+        app.run(host=host, port=port, debug=False, use_reloader=False)
 
 
 if __name__ == '__main__':
