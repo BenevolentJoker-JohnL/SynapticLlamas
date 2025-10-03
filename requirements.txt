@@ -2,3 +2,5 @@ requests>=2.31.0
 ipaddress>=1.0.23
 dask[distributed]>=2024.1.0
 rich>=13.7.0
+flask>=3.0.0
+flask-cors>=4.0.0

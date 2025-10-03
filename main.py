@@ -95,6 +95,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
         print_command("status", "Show current configuration")
         print_command("metrics", "Show last query metrics")
         print_command("sollol", "Show SOLLOL routing stats")
+        print_command("dashboard", "Launch SOLLOL web dashboard (port 8080)")
         print_command("benchmark", "Run auto-benchmark")
         if current_mode == "dask":
             print_command("dask", "Show Dask cluster info")
@@ -313,6 +314,19 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             test_input="Benchmark test: explain quantum computing",
                             iterations=2
                         )
+
+            # Dashboard command
+            elif command == 'dashboard':
+                print("🚀 Launching SOLLOL Dashboard on http://localhost:8080")
+                print("   Opening in background...")
+                print("   Press Ctrl+C in dashboard terminal to stop\n")
+                import subprocess
+                import threading
+                def run_dashboard():
+                    subprocess.run(['python3', 'dashboard_server.py'])
+                dashboard_thread = threading.Thread(target=run_dashboard, daemon=True)
+                dashboard_thread.start()
+                print("✅ Dashboard started! Open http://localhost:8080 in your browser\n")
 
             # Handle metrics
             elif command == 'metrics':
