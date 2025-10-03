@@ -1,0 +1,11 @@
+include README.md
+include LICENSE
+include requirements.txt
+include requirements-dev.txt
+include CONTRIBUTING.md
+include CODE_OF_CONDUCT.md
+recursive-include docs *.md
+recursive-include examples *.py
+exclude tests/*
+exclude .github/*
+exclude .git/*

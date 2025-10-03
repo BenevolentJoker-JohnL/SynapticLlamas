@@ -1,0 +1,190 @@
+{
+  "summary": {
+    "total_tests": 4,
+    "successful_tests": 3,
+    "failed_tests": 1,
+    "configurations_tested": 4,
+    "test_timestamp": "2025-10-02T16:12:38.405620"
+  },
+  "configuration_performance": {
+    "Collaborative (No AST)": {
+      "avg_time": 528.81,
+      "min_time": 528.81,
+      "max_time": 528.81,
+      "avg_quality_score": 0.0,
+      "success_rate": 100.0
+    },
+    "Collaborative + AST (0.7)": {
+      "avg_time": 488.61,
+      "min_time": 488.61,
+      "max_time": 488.61,
+      "avg_quality_score": 0.5,
+      "success_rate": 100.0
+    },
+    "High Quality (AST 0.9)": {
+      "avg_time": 610.04,
+      "min_time": 610.04,
+      "max_time": 610.04,
+      "avg_quality_score": 0.5,
+      "success_rate": 100.0
+    }
+  },
+  "recommendations": [
+    "\u26a1 Fastest: 'Collaborative + AST (0.7)' with 488.61s average",
+    "\ud83c\udfc6 Highest Quality: 'Collaborative + AST (0.7)' with 0.5 score",
+    "\u2696\ufe0f  Recommended: 'Collaborative + AST (0.7)' for balanced speed and quality"
+  ],
+  "detailed_results": [
+    {
+      "test_name": "Parallel (No Collab)",
+      "mode": "parallel",
+      "strategy": "ExecutionMode.PARALLEL_SAME_NODE",
+      "collaborative": false,
+      "ast_enabled": false,
+      "refinement_rounds": 0,
+      "query": "What is machine learning?",
+      "total_time": 141.25783801078796,
+      "phase_times": [],
+      "quality_score": 0.0,
+      "quality_passed": true,
+      "node_count": 1,
+      "agent_count": 3,
+      "success": false,
+      "error": "'agent'",
+      "timestamp": "2025-10-02T15:45:22.900827"
+    },
+    {
+      "test_name": "Collaborative (No AST)",
+      "mode": "collaborative",
+      "strategy": "None",
+      "collaborative": true,
+      "ast_enabled": false,
+      "refinement_rounds": 1,
+      "query": "What is machine learning?",
+      "total_time": 528.813404083252,
+      "phase_times": [
+        [
+          "Phase 1: Initial Research",
+          105.36196565628052
+        ],
+        [
+          "Phase 2: Critique",
+          148.0974943637848
+        ],
+        [
+          "Phase 3: Refinement 1",
+          95.2095000743866
+        ],
+        [
+          "Phase 4: Final Synthesis",
+          180.14294385910034
+        ]
+      ],
+      "quality_score": 0.0,
+      "quality_passed": true,
+      "node_count": 1,
+      "agent_count": 3,
+      "success": true,
+      "error": "",
+      "timestamp": "2025-10-02T15:54:13.724364"
+    },
+    {
+      "test_name": "Collaborative + AST (0.7)",
+      "mode": "collaborative",
+      "strategy": "None",
+      "collaborative": true,
+      "ast_enabled": true,
+      "refinement_rounds": 1,
+      "query": "What is machine learning?",
+      "total_time": 488.61261200904846,
+      "phase_times": [
+        [
+          "Phase 1: Initial Research",
+          15.265648365020752
+        ],
+        [
+          "Phase 2: Critique",
+          35.72069954872131
+        ],
+        [
+          "Phase 3: Refinement 1",
+          44.38050150871277
+        ],
+        [
+          "Phase 4: Final Synthesis",
+          123.52239179611206
+        ],
+        [
+          "Phase 5: Quality Voting (Attempt 1)",
+          64.65412211418152
+        ],
+        [
+          "Phase 5.1: Re-refinement 1",
+          139.80618333816528
+        ],
+        [
+          "Phase 5: Quality Voting (Attempt 2)",
+          65.26187992095947
+        ]
+      ],
+      "quality_score": 0.5,
+      "quality_passed": false,
+      "node_count": 1,
+      "agent_count": 3,
+      "success": true,
+      "error": "",
+      "timestamp": "2025-10-02T16:02:24.346565"
+    },
+    {
+      "test_name": "High Quality (AST 0.9)",
+      "mode": "collaborative",
+      "strategy": "None",
+      "collaborative": true,
+      "ast_enabled": true,
+      "refinement_rounds": 2,
+      "query": "What is machine learning?",
+      "total_time": 610.0381498336792,
+      "phase_times": [
+        [
+          "Phase 1: Initial Research",
+          9.144248008728027
+        ],
+        [
+          "Phase 2: Critique",
+          30.1708767414093
+        ],
+        [
+          "Phase 3: Refinement 1",
+          40.282896518707275
+        ],
+        [
+          "Phase 3: Refinement 2",
+          70.4607949256897
+        ],
+        [
+          "Phase 4: Final Synthesis",
+          154.87339735031128
+        ],
+        [
+          "Phase 5: Quality Voting (Attempt 1)",
+          79.74175262451172
+        ],
+        [
+          "Phase 5.1: Re-refinement 1",
+          159.1747705936432
+        ],
+        [
+          "Phase 5: Quality Voting (Attempt 2)",
+          66.18780493736267
+        ]
+      ],
+      "quality_score": 0.5,
+      "quality_passed": false,
+      "node_count": 1,
+      "agent_count": 3,
+      "success": true,
+      "error": "",
+      "timestamp": "2025-10-02T16:12:36.395052"
+    }
+  ]
+}

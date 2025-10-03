@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  synapticllamas:
+    build: .
+    image: synapticllamas:latest
+    container_name: synapticllamas
+    stdin_open: true
+    tty: true
+    network_mode: host
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount for persistent node configuration
+      - ./node_config.json:/app/node_config.json
+      # Mount for outputs/logs
+      - ./outputs:/app/outputs
+    command: ["--interactive"]
+
+  # Optional: Run Ollama in a container
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
