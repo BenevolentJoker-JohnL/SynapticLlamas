@@ -20,9 +20,15 @@ from datetime import datetime
 
 # Import SOLLOL modules
 from sollol.intelligence import IntelligentRouter, TaskContext
-from sollol.prioritization import PriorityQueue, PriorityLevel
-from sollol.memory import PerformanceMemory
-from sollol.metrics import MetricsCollector
+from sollol.prioritization import (
+    PriorityQueue,
+    PRIORITY_CRITICAL,
+    PRIORITY_HIGH,
+    PRIORITY_NORMAL,
+    PRIORITY_LOW,
+    PRIORITY_BATCH
+)
+from sollol.adapters import PerformanceMemory, MetricsCollector
 
 # Import existing SynapticLlamas modules
 from node_registry import NodeRegistry
@@ -355,11 +361,9 @@ class SOLLOLLoadBalancer:
                 'unique_models': len(set(h['model'] for h in self.memory.history)),
             },
             'queue': {
-                'depth': self.priority_queue.size(),
-                'priorities': {
-                    level.name: self.priority_queue.get_queue_depth(level)
-                    for level in PriorityLevel
-                },
+                'depth': len(self.priority_queue.queue),
+                'total_queued': self.priority_queue.total_queued,
+                'total_processed': self.priority_queue.total_processed,
             }
         }
 

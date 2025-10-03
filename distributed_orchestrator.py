@@ -8,6 +8,7 @@ from node_registry import NodeRegistry
 from sollol_load_balancer import SOLLOLLoadBalancer  # SOLLOL intelligent routing
 from adaptive_strategy import AdaptiveStrategySelector, ExecutionMode
 from collaborative_workflow import CollaborativeWorkflow
+from load_balancer import RoutingStrategy
 import logging
 import time
 
