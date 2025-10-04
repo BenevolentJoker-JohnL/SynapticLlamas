@@ -74,7 +74,8 @@ class HybridRouter:
         rpc_backends: Optional[List[Dict[str, Any]]] = None,
         coordinator_host: str = "127.0.0.1",
         coordinator_port: int = 8080,
-        enable_distributed: bool = True
+        enable_distributed: bool = True,
+        auto_discover_rpc: bool = True
     ):
         """
         Initialize hybrid router with automatic GGUF resolution from Ollama.
@@ -82,11 +83,25 @@ class HybridRouter:
         Args:
             ollama_pool: OllamaPool for standard requests
             rpc_backends: List of RPC backend configs [{"host": "ip", "port": 50052}]
+                         If None and auto_discover_rpc=True, will auto-discover
             coordinator_host: Host for llama-server coordinator
             coordinator_port: Port for llama-server coordinator
             enable_distributed: Enable llama.cpp distributed routing
+            auto_discover_rpc: Auto-discover RPC backends if none provided
         """
         self.ollama_pool = ollama_pool
+
+        # Auto-discover RPC backends if none provided
+        if rpc_backends is None and enable_distributed and auto_discover_rpc:
+            logger.info("🔍 Auto-discovering RPC backends...")
+            from .rpc_discovery import auto_discover_rpc_backends
+            discovered = auto_discover_rpc_backends()
+            if discovered:
+                rpc_backends = discovered
+                logger.info(f"✅ Auto-discovered {len(discovered)} RPC backends")
+            else:
+                logger.info("ℹ️  No RPC backends found via auto-discovery")
+
         self.enable_distributed = enable_distributed and rpc_backends is not None
 
         # Store RPC backend configs for on-demand coordinator creation
@@ -101,10 +116,16 @@ class HybridRouter:
         # GGUF resolver for extracting models from Ollama storage
         self.gguf_resolver = OllamaGGUFResolver()
 
+        # Log initialization status
+        rpc_info = ""
+        if self.enable_distributed:
+            rpc_info = f", RPC backends={len(self.rpc_backends)}"
+
         logger.info(
             f"HybridRouter initialized: "
             f"Ollama={'enabled' if ollama_pool else 'disabled'}, "
             f"Distributed={'enabled' if self.enable_distributed else 'disabled'}"
+            f"{rpc_info}"
         )
 
     async def _ensure_coordinator_for_model(self, model: str):

@@ -7,7 +7,7 @@ RPC servers (default port: 50052).
 import socket
 import asyncio
 import logging
-from typing import List, Dict
+from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 import httpx
 
@@ -40,7 +40,7 @@ def discover_rpc_backends(
     cidr: str = None,
     port: int = 50052,
     timeout: float = 1.0
-) -> List[Dict[str, any]]:
+) -> List[Dict[str, Any]]:
     """
     Discover RPC backends on the network.
 
@@ -122,7 +122,7 @@ def _cidr_to_ips(cidr: str) -> List[str]:
 
 
 # Convenience function
-def auto_discover_rpc_backends(port: int = 50052) -> List[Dict[str, any]]:
+def auto_discover_rpc_backends(port: int = 50052) -> List[Dict[str, Any]]:
     """
     Auto-discover RPC backends on the local network.
 

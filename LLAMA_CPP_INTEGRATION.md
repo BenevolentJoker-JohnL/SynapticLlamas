@@ -47,15 +47,23 @@ python3 main.py --distributed \
 # Configuration is saved automatically
 ```
 
-### Option 2: Interactive Mode
+### Option 2: Interactive Mode (Auto-Discovery)
 
 ```bash
 # Start interactive mode
 python3 main.py
 
-# Add RPC backends
-SynapticLlamas> rpc add 192.168.1.10:50052
-SynapticLlamas> rpc add 192.168.1.11:50052
+# Auto-discover RPC backends on your network
+SynapticLlamas> rpc discover
+🔍 Scanning network for RPC backends...
+   ✅ Found: 192.168.1.10:50052
+   ✅ Found: 192.168.1.11:50052
+✅ Added 2 new RPC backend(s)
+
+# Or manually add if needed
+SynapticLlamas> rpc add 192.168.1.12:50052
+
+# List configured backends
 SynapticLlamas> rpc list
 
 # Enable distributed inference
@@ -74,6 +82,7 @@ SynapticLlamas> status
 | Command | Description |
 |---------|-------------|
 | `distributed on/off` | Enable/disable llama.cpp distributed inference |
+| `rpc discover` | **Auto-discover RPC backends on network** |
 | `rpc add <host:port>` | Add RPC backend (default port: 50052) |
 | `rpc remove <host:port>` | Remove RPC backend |
 | `rpc list` | List configured RPC backends |
@@ -88,6 +97,48 @@ The dashboard includes a dedicated **"llama.cpp Backend"** tab showing:
 - 🔗 RPC backend connections/disconnections
 - ✓ Active backend status
 - 📡 Distributed mode indicators
+
+---
+
+## 🔍 Auto-Discovery Feature
+
+**Zero-configuration RPC backend setup!**
+
+SynapticLlamas can automatically discover llama.cpp RPC servers on your network:
+
+### How Auto-Discovery Works
+
+1. **Network Scanning**: Scans local subnet for RPC servers on port 50052
+2. **Parallel Detection**: Fast multi-threaded scanning (<1 second)
+3. **Automatic Configuration**: Discovered backends are saved to config
+4. **Environment Support**: Honors `LLAMA_RPC_BACKENDS` environment variable
+
+### Using Auto-Discovery
+
+**Automatic (on startup)**:
+```bash
+# Enable distributed inference (triggers auto-discovery if no backends configured)
+SynapticLlamas> distributed on
+🔍 Distributed inference enabled but no RPC backends configured. Auto-discovering...
+✅ Auto-discovered and configured 2 RPC backends
+```
+
+**Manual (command)**:
+```bash
+# Manually scan network for RPC backends
+SynapticLlamas> rpc discover
+🔍 Scanning network for RPC backends...
+   ✅ Found: 192.168.1.10:50052
+   ✅ Found: 192.168.1.11:50052
+✅ Added 2 new RPC backend(s)
+```
+
+**Environment Variable**:
+```bash
+# Pre-configure backends via environment
+export LLAMA_RPC_BACKENDS="192.168.1.10:50052,192.168.1.11:50052"
+python3 main.py --distributed
+```
 
 ---
 
@@ -186,10 +237,22 @@ GGML_RPC=ON make rpc-server
 
 ### 2. Configure SynapticLlamas (Coordinator Node)
 
+**Option A: Auto-Discovery (Recommended)**
 ```bash
 # Pull model in Ollama
 ollama pull llama3.1:405b
 
+# Start SynapticLlamas
+python3 main.py --distributed
+
+# Auto-discover RPC backends
+SynapticLlamas> rpc discover
+SynapticLlamas> distributed on
+SynapticLlamas> dashboard
+```
+
+**Option B: Manual Configuration**
+```bash
 # Start SynapticLlamas
 python3 main.py --distributed
 
@@ -336,11 +399,12 @@ curl http://192.168.1.10:50052/health
 
 **llama.cpp distributed inference is FULLY INTEGRATED into SynapticLlamas!**
 
-✅ **Works out of the box** - Just add RPC backends and enable
+✅ **Zero configuration** - Auto-discovers RPC backends on your network
+✅ **Works out of the box** - Just enable distributed inference
 ✅ **Zero manual GGUF management** - Auto-extracts from Ollama
 ✅ **Automatic routing** - Small → Ollama, Large → Distributed
 ✅ **Full monitoring** - Dashboard with real-time logs
 ✅ **Persistent config** - Settings saved automatically
 ✅ **CLI + Interactive** - Both modes fully supported
 
-**You can now run ANY size model with the Ollama API!** 🚀
+**You can now run ANY size model with the Ollama API - no manual setup!** 🚀

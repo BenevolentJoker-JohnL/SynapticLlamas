@@ -114,15 +114,27 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
     # FlockParser RAG settings
     flockparser_enabled = config.get("flockparser_enabled", False)
 
-    # Distributed inference settings
-    distributed_inference_enabled = config.get("distributed_inference_enabled", False)
-    rpc_backends = config.get("rpc_backends", [])
-
-    # Helper to auto-save settings
+    # Helper to auto-save settings (defined early so it can be used below)
     def update_config(**kwargs):
         nonlocal config
         config.update(kwargs)
         save_config(config)
+
+    # Distributed inference settings
+    distributed_inference_enabled = config.get("distributed_inference_enabled", False)
+    rpc_backends = config.get("rpc_backends", [])
+
+    # Auto-discover RPC backends if distributed inference is enabled but no backends configured
+    if distributed_inference_enabled and len(rpc_backends) == 0:
+        logger.info("🔍 Distributed inference enabled but no RPC backends configured. Auto-discovering...")
+        from sollol.rpc_discovery import auto_discover_rpc_backends
+        discovered = auto_discover_rpc_backends()
+        if discovered:
+            rpc_backends = discovered
+            update_config(rpc_backends=rpc_backends)
+            logger.info(f"✅ Auto-discovered and configured {len(discovered)} RPC backends")
+        else:
+            logger.info("ℹ️  No RPC backends found. You can add them manually with: rpc add <host:port>")
 
     def print_welcome():
         console.clear()
@@ -172,6 +184,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
         console.print("\n[bold red]🔗 DISTRIBUTED INFERENCE (llama.cpp)[/bold red]")
         dist_status = "[green]ON[/green]" if distributed_inference_enabled else "[dim]OFF[/dim]"
         print_command(f"distributed on/off [{dist_status}]", "Toggle llama.cpp distributed inference")
+        print_command(f"rpc discover", "Auto-discover RPC backends on network")
         print_command(f"rpc add <host:port>", "Add RPC backend (default port: 50052)")
         print_command(f"rpc remove <host:port>", "Remove RPC backend")
         print_command(f"rpc list", f"List RPC backends ({len(rpc_backends)} configured)")
@@ -434,10 +447,35 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
             # RPC backend management
             elif command == 'rpc':
                 if len(parts) < 2:
-                    print("❌ Usage: rpc [add|remove|list] <host:port>\n")
+                    print("❌ Usage: rpc [add|remove|list|discover] <host:port>\n")
                 else:
                     subcommand = parts[1].lower()
-                    if subcommand == 'list':
+                    if subcommand == 'discover':
+                        print("🔍 Scanning network for RPC backends...\n")
+                        from sollol.rpc_discovery import auto_discover_rpc_backends
+                        discovered = auto_discover_rpc_backends()
+                        if discovered:
+                            # Add newly discovered backends (avoid duplicates)
+                            added_count = 0
+                            for backend in discovered:
+                                if backend not in rpc_backends:
+                                    rpc_backends.append(backend)
+                                    added_count += 1
+                                    print(f"   ✅ Found: {backend['host']}:{backend['port']}")
+
+                            if added_count > 0:
+                                update_config(rpc_backends=rpc_backends)
+                                if distributed_inference_enabled:
+                                    global_orchestrator = None
+                                print(f"\n✅ Added {added_count} new RPC backend(s)")
+                                print(f"   Total backends: {len(rpc_backends)}\n")
+                            else:
+                                print("\nℹ️  All discovered backends already configured\n")
+                        else:
+                            print("❌ No RPC backends found on the network")
+                            print("   Make sure RPC servers are running:")
+                            print("   rpc-server --host 0.0.0.0 --port 50052 --mem 2048\n")
+                    elif subcommand == 'list':
                         if len(rpc_backends) == 0:
                             print("📡 No RPC backends configured\n")
                         else:
@@ -496,7 +534,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             else:
                                 print(f"❌ Backend not found: {host}:{port}\n")
                     else:
-                        print("❌ Unknown subcommand. Use: rpc [add|remove|list]\n")
+                        print("❌ Unknown subcommand. Use: rpc [discover|add|remove|list]\n")
 
             # Strategy selection
             elif command == 'strategy':
