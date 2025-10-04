@@ -1,4 +1,5 @@
 requests>=2.31.0
+httpx>=0.24.0
 ipaddress>=1.0.23
 dask[distributed]>=2024.1.0
 rich>=13.7.0
@@ -6,3 +7,4 @@ flask
 flask-cors
 flask-sock
 waitress>=3.0.0
+asyncio>=3.4.3
