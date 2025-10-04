@@ -314,13 +314,17 @@ class Ollama:
         """
         Initialize Ollama client with optional distributed inference.
 
+        AUTOMATIC GGUF RESOLUTION: Models are automatically extracted from Ollama's
+        blob storage. No need to specify GGUF paths - just pull the model in Ollama!
+
         Args:
             nodes: List of Ollama node dicts (optional, auto-discovers if not provided)
             host: Single host (convenience, creates single-node pool)
             port: Port for single host (default: 11434)
             enable_distributed: Enable llama.cpp distributed inference for large models
-            rpc_nodes: llama.cpp RPC nodes for distributed inference
-                      Format: [{"host": "ip", "port": 50052, "model_path": "path.gguf"}]
+            rpc_nodes: llama.cpp RPC backend nodes for distributed inference
+                      Format: [{"host": "ip", "port": 50052}]
+                      Note: No model_path needed - auto-resolved from Ollama!
         """
         # Handle single host convenience parameter
         if host is not None:
@@ -335,28 +339,17 @@ class Ollama:
         self.enable_distributed = enable_distributed
 
         if enable_distributed and rpc_nodes:
-            from .llama_cpp_rpc import LlamaCppNode
             from .hybrid_router import HybridRouter
 
-            # Convert RPC node dicts to LlamaCppNode objects
-            llamacpp_nodes = [
-                LlamaCppNode(
-                    host=node['host'],
-                    port=node['port'],
-                    model_path=node.get('model_path', ''),
-                    layers_start=node.get('layers_start', 0),
-                    layers_end=node.get('layers_end', 0)
-                )
-                for node in rpc_nodes
-            ]
-
+            # Create hybrid router with automatic GGUF resolution from Ollama storage
             self.hybrid_router = HybridRouter(
                 ollama_pool=self.pool,
-                llamacpp_nodes=llamacpp_nodes,
+                rpc_backends=rpc_nodes,  # Just pass the dicts directly
                 enable_distributed=True
             )
 
             logger.info("🚀 Ollama client initialized with distributed inference support")
+            logger.info("   Models will be auto-resolved from Ollama storage (no GGUF paths needed!)")
 
     def chat(
         self,

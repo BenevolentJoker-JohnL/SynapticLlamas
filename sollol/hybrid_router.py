@@ -14,11 +14,8 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
 from .pool import OllamaPool
-from .llama_cpp_rpc import (
-    LlamaCppDistributedCluster,
-    LlamaCppNode,
-    resolve_model_path
-)
+from .llama_cpp_coordinator import LlamaCppCoordinator, RPCBackend
+from .ollama_gguf_resolver import OllamaGGUFResolver
 
 logger = logging.getLogger(__name__)
 
@@ -74,24 +71,35 @@ class HybridRouter:
     def __init__(
         self,
         ollama_pool: Optional[OllamaPool] = None,
-        llamacpp_nodes: Optional[List[LlamaCppNode]] = None,
+        rpc_backends: Optional[List[Dict[str, Any]]] = None,
+        coordinator_host: str = "127.0.0.1",
+        coordinator_port: int = 8080,
         enable_distributed: bool = True
     ):
         """
-        Initialize hybrid router.
+        Initialize hybrid router with automatic GGUF resolution from Ollama.
 
         Args:
             ollama_pool: OllamaPool for standard requests
-            llamacpp_nodes: llama.cpp RPC nodes for distributed inference
+            rpc_backends: List of RPC backend configs [{"host": "ip", "port": 50052}]
+            coordinator_host: Host for llama-server coordinator
+            coordinator_port: Port for llama-server coordinator
             enable_distributed: Enable llama.cpp distributed routing
         """
         self.ollama_pool = ollama_pool
-        self.llamacpp_clusters: Dict[str, LlamaCppDistributedCluster] = {}
-        self.enable_distributed = enable_distributed and llamacpp_nodes is not None
+        self.enable_distributed = enable_distributed and rpc_backends is not None
 
-        # Create distributed clusters if nodes available
-        if self.enable_distributed and llamacpp_nodes:
-            self._setup_distributed_clusters(llamacpp_nodes)
+        # Store RPC backend configs for on-demand coordinator creation
+        self.rpc_backends = rpc_backends
+        self.coordinator_host = coordinator_host
+        self.coordinator_port = coordinator_port
+
+        # Coordinator created on-demand when first large model request arrives
+        self.coordinator: Optional[LlamaCppCoordinator] = None
+        self.coordinator_model: Optional[str] = None  # Track which model is loaded
+
+        # GGUF resolver for extracting models from Ollama storage
+        self.gguf_resolver = OllamaGGUFResolver()
 
         logger.info(
             f"HybridRouter initialized: "
@@ -99,31 +107,71 @@ class HybridRouter:
             f"Distributed={'enabled' if self.enable_distributed else 'disabled'}"
         )
 
-    def _setup_distributed_clusters(self, nodes: List[LlamaCppNode]):
-        """Setup llama.cpp clusters for large models."""
-        # Group nodes by model if specified, or create general cluster
-        if all(node.model_path for node in nodes):
-            # Nodes have specific models assigned
-            clusters_by_model = {}
-            for node in nodes:
-                model = node.model_path.split('/')[-1].replace('.gguf', '')
-                if model not in clusters_by_model:
-                    clusters_by_model[model] = []
-                clusters_by_model[model].append(node)
+    async def _ensure_coordinator_for_model(self, model: str):
+        """
+        Ensure coordinator is started with the correct model.
 
-            for model, model_nodes in clusters_by_model.items():
-                self.llamacpp_clusters[model] = LlamaCppDistributedCluster(
-                    model_nodes,
-                    model_name=model
-                )
-        else:
-            # General cluster for all large models
-            self.llamacpp_clusters['default'] = LlamaCppDistributedCluster(
-                nodes,
-                model_name='default'
+        This method:
+        1. Resolves GGUF path from Ollama storage (automatic!)
+        2. Creates coordinator if not exists
+        3. Restarts coordinator if different model requested
+        4. Starts coordinator if not already running
+
+        Args:
+            model: Ollama model name (e.g., "llama3.1:405b")
+        """
+        # If coordinator exists and serving same model, we're done
+        if self.coordinator and self.coordinator_model == model:
+            return
+
+        # Resolve GGUF path from Ollama storage
+        logger.info(f"🔍 Resolving GGUF path for Ollama model: {model}")
+        gguf_path = self.gguf_resolver.resolve(model)
+
+        if not gguf_path:
+            raise FileNotFoundError(
+                f"Could not find GGUF for '{model}' in Ollama storage. "
+                f"Please ensure model is pulled: ollama pull {model}"
             )
 
-        logger.info(f"Created {len(self.llamacpp_clusters)} llama.cpp clusters")
+        logger.info(f"✅ Found GGUF: {gguf_path}")
+
+        # Stop existing coordinator if serving different model
+        if self.coordinator and self.coordinator_model != model:
+            logger.info(f"Stopping coordinator (switching from {self.coordinator_model} to {model})")
+            await self.coordinator.stop()
+            self.coordinator = None
+
+        # Create coordinator if needed
+        if not self.coordinator:
+            # Convert dict configs to RPCBackend objects
+            backends = [
+                RPCBackend(
+                    host=backend['host'],
+                    port=backend.get('port', 50052)
+                )
+                for backend in self.rpc_backends
+            ]
+
+            # Create coordinator
+            self.coordinator = LlamaCppCoordinator(
+                model_path=gguf_path,
+                rpc_backends=backends,
+                host=self.coordinator_host,
+                port=self.coordinator_port
+            )
+
+            # Start coordinator
+            logger.info(f"🚀 Starting llama.cpp coordinator for {model}...")
+            await self.coordinator.start()
+
+            # Track which model is loaded
+            self.coordinator_model = model
+
+            logger.info(
+                f"✅ Coordinator started with {len(backends)} RPC backends "
+                f"on {self.coordinator_host}:{self.coordinator_port}"
+            )
 
     def should_use_distributed(self, model: str) -> bool:
         """
@@ -271,62 +319,45 @@ class HybridRouter:
         messages: List[Dict[str, str]],
         **kwargs
     ) -> Dict[str, Any]:
-        """Route to llama.cpp distributed cluster."""
-        if not self.llamacpp_clusters:
-            raise RuntimeError("No llama.cpp clusters available")
+        """
+        Route to llama.cpp distributed coordinator.
 
-        # Get appropriate cluster
-        cluster = self._get_cluster_for_model(model)
+        This method automatically:
+        1. Resolves the GGUF from Ollama's blob storage
+        2. Starts the coordinator with the correct model
+        3. Makes the inference request
+        """
+        # Ensure coordinator is started with correct model (auto-resolves GGUF!)
+        await self._ensure_coordinator_for_model(model)
 
-        # Convert messages to prompt (llama.cpp format)
-        prompt = self._messages_to_prompt(messages)
-
-        # Generate using distributed cluster
-        result = await cluster.generate(prompt, kwargs)
+        # Use the coordinator's chat method (which uses /v1/chat/completions endpoint)
+        result = await self.coordinator.chat(
+            messages=messages,
+            max_tokens=kwargs.get('max_tokens', 512),
+            temperature=kwargs.get('temperature', 0.7)
+        )
 
         # Convert to Ollama-style response
-        return self._convert_to_ollama_format(result)
+        return self._convert_llamacpp_to_ollama(result, model)
 
-    def _get_cluster_for_model(self, model: str) -> LlamaCppDistributedCluster:
-        """Get appropriate cluster for model."""
-        # Try model-specific cluster
-        model_key = model.replace(':', '-')
-        if model_key in self.llamacpp_clusters:
-            return self.llamacpp_clusters[model_key]
-
-        # Use default cluster
-        if 'default' in self.llamacpp_clusters:
-            return self.llamacpp_clusters['default']
-
-        # Use any available cluster
-        return next(iter(self.llamacpp_clusters.values()))
-
-    def _messages_to_prompt(self, messages: List[Dict[str, str]]) -> str:
-        """Convert Ollama messages to llama.cpp prompt format."""
-        prompt_parts = []
-
-        for msg in messages:
-            role = msg.get('role', 'user')
-            content = msg.get('content', '')
-
-            if role == 'system':
-                prompt_parts.append(f"System: {content}")
-            elif role == 'user':
-                prompt_parts.append(f"User: {content}")
-            elif role == 'assistant':
-                prompt_parts.append(f"Assistant: {content}")
-
-        prompt_parts.append("Assistant:")  # Prompt for response
-        return "\n\n".join(prompt_parts)
-
-    def _convert_to_ollama_format(self, llamacpp_result: Dict) -> Dict[str, Any]:
+    def _convert_llamacpp_to_ollama(
+        self,
+        llamacpp_result: Dict,
+        model: str
+    ) -> Dict[str, Any]:
         """Convert llama.cpp response to Ollama format."""
-        # Extract generated text
-        content = llamacpp_result.get('content', '')
+        # llama.cpp /v1/chat/completions returns OpenAI-compatible format
+        # Extract the message content
+        choices = llamacpp_result.get('choices', [])
+        if choices:
+            message = choices[0].get('message', {})
+            content = message.get('content', '')
+        else:
+            content = ''
 
         # Build Ollama-style response
         return {
-            'model': llamacpp_result.get('_distributed', {}).get('cluster', 'unknown'),
+            'model': model,
             'message': {
                 'role': 'assistant',
                 'content': content
@@ -334,7 +365,8 @@ class HybridRouter:
             'done': True,
             '_routing': {
                 'backend': 'llama.cpp-distributed',
-                'cluster_info': llamacpp_result.get('_distributed', {})
+                'coordinator': f"{self.coordinator.host}:{self.coordinator.port}",
+                'rpc_backends': len(self.coordinator.rpc_backends)
             }
         }
 

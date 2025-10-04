@@ -4,6 +4,16 @@
 
 SynapticLlamas combines Ollama's simplicity with llama.cpp's distributed inference to enable running models of ANY size across consumer hardware.
 
+## 🎯 Key Innovation: Automatic GGUF Resolution
+
+**No manual GGUF downloads needed!** SynapticLlamas automatically extracts GGUF files from Ollama's blob storage.
+
+- ✅ Pull model once with `ollama pull llama3.1:405b`
+- ✅ SynapticLlamas finds the GGUF automatically
+- ✅ Distributes it across your nodes transparently
+
+**No duplication. No manual paths. Just works.**
+
 ---
 
 ## The Problem
@@ -24,7 +34,7 @@ SynapticLlamas combines Ollama's simplicity with llama.cpp's distributed inferen
 
 ```
 Small Models (≤ 13B)  →  Ollama Pool (fast, simple)
-Large Models (> 70B)  →  llama.cpp Distributed (impossible otherwise)
+Large Models (> 70B)  →  llama.cpp Distributed (auto-extracts GGUF from Ollama!)
 ```
 
 **Result:** Run llama3.1:405b on 6x consumer GPUs with Ollama API!
@@ -54,33 +64,32 @@ response = client.chat("llama3.2", "Hello!")
 ```python
 from sollol import Ollama
 
-# Enable distributed inference for large models
+# Pull the model in Ollama ONCE (if not already pulled)
+# ollama pull llama3.1:405b
+
+# Enable distributed inference - GGUF auto-extracted from Ollama!
 client = Ollama(
     enable_distributed=True,
     rpc_nodes=[
-        # Node 1: Handles first half of layers
-        {
-            "host": "192.168.1.10",
-            "port": 50052,
-            "layers_start": 0,
-            "layers_end": 63
-        },
-        # Node 2: Handles second half of layers
-        {
-            "host": "192.168.1.11",
-            "port": 50052,
-            "layers_start": 63,
-            "layers_end": 126
-        }
+        {"host": "192.168.1.10", "port": 50052},  # RPC backend 1
+        {"host": "192.168.1.11", "port": 50052},  # RPC backend 2
+        # Add more nodes as needed
     ]
 )
 
 # Small models → Ollama (automatic)
 response = client.chat("llama3.2", "Hello!")
 
-# Large models → llama.cpp distributed (automatic)
+# Large models → llama.cpp distributed (automatic GGUF extraction!)
 response = client.chat("llama3.1:405b", "Explain quantum computing")
 ```
+
+**What happens behind the scenes:**
+1. You request `llama3.1:405b`
+2. SynapticLlamas finds the GGUF in `~/.ollama/models/blobs/`
+3. Starts llama.cpp coordinator with that GGUF
+4. Distributes layers across RPC backends automatically
+5. Returns response in Ollama format
 
 **What you get:**
 - ✅ All benefits of basic usage
@@ -92,39 +101,52 @@ response = client.chat("llama3.1:405b", "Explain quantum computing")
 
 ## Setup: llama.cpp RPC Servers
 
-### Step 1: Install llama.cpp on Each Node
+### Step 1: Pull Model in Ollama (Coordinator Node)
+
+On the machine running SynapticLlamas (coordinator):
 
 ```bash
-# Clone and build llama.cpp
-git clone https://github.com/ggerganov/llama.cpp
-cd llama.cpp
-make llama-rpc-server
+# Pull the model once - SynapticLlamas will find the GGUF automatically!
+ollama pull llama3.1:405b
 
-# Download model (one time, can copy to other nodes)
-wget https://huggingface.co/Meta-Llama-3.1-405B-Instruct-GGUF/llama-3.1-405b.gguf
+# That's it! The GGUF is now in ~/.ollama/models/blobs/
+# SynapticLlamas will extract and use it automatically
 ```
 
-### Step 2: Start RPC Server on Each Node
+### Step 2: Install llama.cpp on RPC Backend Nodes
+
+On each worker node:
+
+```bash
+# Clone and build llama.cpp with RPC support
+git clone https://github.com/ggerganov/llama.cpp
+cd llama.cpp
+GGML_RPC=ON make rpc-server
+```
+
+### Step 3: Start RPC Server on Each Worker Node
 
 **Node 1 (192.168.1.10):**
 ```bash
-./llama-rpc-server \
-  -m models/llama-3.1-405b.gguf \
+./rpc-server \
   --host 0.0.0.0 \
   --port 50052 \
-  --ctx-size 8192
+  --mem 2048
 ```
 
 **Node 2 (192.168.1.11):**
 ```bash
-./llama-rpc-server \
-  -m models/llama-3.1-405b.gguf \
+./rpc-server \
   --host 0.0.0.0 \
   --port 50052 \
-  --ctx-size 8192
+  --mem 2048
 ```
 
-### Step 3: Use with SynapticLlamas
+**Note:** RPC servers don't need the model file! The coordinator sends model data to them.
+
+### Step 4: Use with SynapticLlamas
+
+On the coordinator machine:
 
 ```python
 from sollol import Ollama
@@ -137,7 +159,7 @@ client = Ollama(
     ]
 )
 
-# Automatically routes to distributed cluster
+# Automatically routes to distributed cluster (extracts GGUF from Ollama!)
 response = client.chat("llama3.1:405b", "Write a poem about AI")
 print(response)
 ```

@@ -42,32 +42,26 @@ def demo_distributed_model():
     print("=" * 70)
     print()
 
+    print("AUTOMATIC GGUF EXTRACTION FROM OLLAMA!")
+    print("No manual GGUF paths needed - just pull in Ollama:")
+    print("  $ ollama pull llama3.1:405b")
+    print()
+
     # Create client with distributed inference enabled
+    # NO MODEL PATHS NEEDED - auto-extracted from Ollama!
     client = Ollama(
         enable_distributed=True,
         rpc_nodes=[
-            # Node 1: Layers 0-62
-            {
-                "host": "192.168.1.10",
-                "port": 50052,
-                "model_path": "models/llama-3.1-405b.gguf",
-                "layers_start": 0,
-                "layers_end": 63
-            },
-            # Node 2: Layers 63-125
-            {
-                "host": "192.168.1.11",
-                "port": 50052,
-                "model_path": "models/llama-3.1-405b.gguf",
-                "layers_start": 63,
-                "layers_end": 126
-            }
+            {"host": "192.168.1.10", "port": 50052},  # RPC backend 1
+            {"host": "192.168.1.11", "port": 50052},  # RPC backend 2
         ]
     )
 
     print("Making request with llama3.1:405b (405B model)...")
-    print("This would require ~230GB VRAM on a single node,")
-    print("but splits across 2 nodes (~115GB each)...")
+    print("SynapticLlamas will:")
+    print("  1. Find GGUF in ~/.ollama/models/blobs/")
+    print("  2. Start coordinator with that GGUF")
+    print("  3. Distribute across 2 RPC backends")
     print()
 
     try:
@@ -78,14 +72,17 @@ def demo_distributed_model():
         print(f"Response: {response}")
         print()
         print("✅ Large model routed to llama.cpp distributed cluster!")
+        print("   GGUF automatically extracted from Ollama storage!")
     except Exception as e:
-        print(f"⚠️  Error (expected if RPC servers not running): {e}")
+        print(f"⚠️  Error (expected if setup incomplete): {e}")
         print()
         print("To run this demo:")
-        print("1. Start llama-rpc-server on each node:")
-        print("   Node 1: llama-rpc-server -m models/llama-3.1-405b.gguf -H 0.0.0.0 -p 50052")
-        print("   Node 2: llama-rpc-server -m models/llama-3.1-405b.gguf -H 0.0.0.0 -p 50052")
-        print("2. Run this demo again")
+        print("1. Pull model in Ollama:")
+        print("   ollama pull llama3.1:405b")
+        print("2. Start rpc-server on each worker node:")
+        print("   Node 1: rpc-server --host 0.0.0.0 --port 50052 --mem 2048")
+        print("   Node 2: rpc-server --host 0.0.0.0 --port 50052 --mem 2048")
+        print("3. Run this demo again")
 
     print()
 

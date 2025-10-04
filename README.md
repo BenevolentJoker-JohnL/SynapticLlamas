@@ -40,10 +40,13 @@ response = client.chat("llama3.2", "Summarize quantum computing")
 
 ### 🚀 NEW: Distributed Inference for Large Models
 
-**Run 405B models on consumer hardware with Ollama API:**
+**Run 405B models on consumer hardware with Ollama API + automatic GGUF extraction:**
 
 ```python
-# Enable distributed inference for large models
+# Just pull the model once in Ollama - SynapticLlamas finds the GGUF automatically!
+# $ ollama pull llama3.1:405b
+
+# Enable distributed inference - no manual GGUF paths needed!
 client = Ollama(
     enable_distributed=True,
     rpc_nodes=[
