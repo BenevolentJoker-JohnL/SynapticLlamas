@@ -43,7 +43,60 @@ Large Models (> 70B)  →  llama.cpp Distributed (auto-extracts GGUF from Ollama
 
 ## Quick Start
 
-### 1. Basic Usage (Ollama Only)
+**Two ways to use SynapticLlamas:**
+
+### Option 1: Gateway (Recommended for Production)
+
+**Stupid easy setup - ONE command!**
+
+```bash
+# 1. Pull model in Ollama
+ollama pull llama3.2
+
+# 2. Start gateway
+./start_gateway.sh
+
+# Gateway running on http://localhost:8000
+# All requests go through ONE endpoint!
+```
+
+**With distributed inference:**
+
+```bash
+# Start RPC servers on worker nodes
+# Node 1: rpc-server --host 0.0.0.0 --port 50052 --mem 2048
+# Node 2: rpc-server --host 0.0.0.0 --port 50052 --mem 2048
+
+# Start gateway - auto-discovers RPC servers!
+./start_gateway.sh
+
+# Or manually specify backends:
+# ./start_gateway.sh 192.168.1.10:50052,192.168.1.11:50052
+```
+
+**How it works:**
+1. Start RPC servers on worker nodes (port 50052)
+2. Start gateway (no configuration needed!)
+3. Gateway auto-discovers both Ollama nodes AND RPC servers
+4. Requests are automatically routed based on model size
+
+**Truly zero-config distributed inference!**
+
+**Make requests:**
+
+```bash
+# Small model → Ollama
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama3.2", "messages": [{"role": "user", "content": "Hello!"}]}'
+
+# Large model → Distributed (GGUF auto-extracted from Ollama!)
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama3.1:405b", "messages": [{"role": "user", "content": "Explain quantum computing"}]}'
+```
+
+### Option 2: Python SDK (For Custom Applications)
 
 ```python
 from sollol import Ollama

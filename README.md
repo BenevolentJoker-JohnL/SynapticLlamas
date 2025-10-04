@@ -38,22 +38,34 @@ response = client.chat("llama3.2", "Summarize quantum computing")
 
 **This isn't basic load balancing.** This is production-grade intelligent routing with complete observability, working out of the box.
 
-### 🚀 NEW: Distributed Inference for Large Models
+### 🚀 NEW: Gateway with Auto-Discovery & Distributed Inference
 
-**Run 405B models on consumer hardware with Ollama API + automatic GGUF extraction:**
+**Stupid easy setup - ONE command, everything auto-discovered:**
+
+```bash
+# 1. Pull model in Ollama
+ollama pull llama3.2  # or llama3.1:405b for large models
+
+# 2. (Optional) Start RPC servers on worker nodes for distributed inference
+# rpc-server --host 0.0.0.0 --port 50052 --mem 2048
+
+# 3. Start gateway - auto-discovers EVERYTHING!
+./start_gateway.sh
+
+# Gateway running on http://localhost:8000
+# ✅ Auto-discovers Ollama nodes (port 11434)
+# ✅ Auto-discovers RPC servers (port 50052)
+# ✅ Auto-extracts GGUF from Ollama storage
+# ✅ Automatic routing (small → Ollama, large → distributed)
+```
+
+**Or use the Python SDK:**
 
 ```python
-# Just pull the model once in Ollama - SynapticLlamas finds the GGUF automatically!
-# $ ollama pull llama3.1:405b
+from sollol import Ollama
 
-# Enable distributed inference - no manual GGUF paths needed!
-client = Ollama(
-    enable_distributed=True,
-    rpc_nodes=[
-        {"host": "192.168.1.10", "port": 50052},
-        {"host": "192.168.1.11", "port": 50052}
-    ]
-)
+# Enable distributed inference - auto-discovers RPC servers!
+client = Ollama(enable_distributed=True)
 
 # Small models → Ollama (automatic)
 client.chat("llama3.2", "Hello!")
