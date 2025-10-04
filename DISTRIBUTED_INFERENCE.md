@@ -47,18 +47,16 @@ Large Models (> 70B)  →  llama.cpp Distributed (auto-extracts GGUF from Ollama
 
 ### Option 1: SOLLOL Gateway (Recommended - Port 11434)
 
-**SOLLOL replaces Ollama on port 11434 - your apps don't change!**
+**SOLLOL IS your enhanced Ollama - just run it!**
 
 ```bash
-# 1. Stop or move local Ollama (SOLLOL needs port 11434)
-sudo systemctl stop ollama
-# OR move it: OLLAMA_HOST=0.0.0.0:11435 ollama serve &
-
-# 2. Start SOLLOL - auto-discovers everything!
+# Start SOLLOL on port 11434 (the standard Ollama port)
 ./start_gateway.sh
 
-# SOLLOL running on http://localhost:11434 (Ollama's port!)
-# Your apps work unchanged!
+# SOLLOL running on http://localhost:11434
+# ✅ Auto-discovers Ollama nodes on your network
+# ✅ Auto-discovers RPC backends for distributed inference
+# ✅ Your apps work unchanged!
 ```
 
 **With distributed inference:**

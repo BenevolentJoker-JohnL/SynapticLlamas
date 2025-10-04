@@ -26,13 +26,13 @@ echo ""
 
 # Check if something is already running on 11434
 if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-    echo -e "${YELLOW}⚠️  Port 11434 is already in use!${NC}"
-    echo "   This is likely local Ollama. SOLLOL needs this port."
+    echo -e "${YELLOW}⚠️  Port 11434 is already in use${NC}"
+    echo "   Something is already running on the Ollama port."
     echo ""
-    echo "Options:"
-    echo "  1. Stop local Ollama: sudo systemctl stop ollama"
-    echo "  2. Move Ollama to different port: OLLAMA_HOST=0.0.0.0:11435 ollama serve"
-    echo "  3. Use SOLLOL on different port: PORT=8000 ./start_gateway.sh"
+    echo "If you have vanilla Ollama running, you have options:"
+    echo "  1. Stop it: sudo systemctl stop ollama (SOLLOL replaces it)"
+    echo "  2. Keep both: Move Ollama to 11435, SOLLOL on 11434"
+    echo "  3. Run SOLLOL on different port: PORT=8000 ./start_gateway.sh"
     echo ""
     read -p "Continue anyway? (y/N) " -n 1 -r
     echo

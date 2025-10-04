@@ -38,26 +38,22 @@ response = client.chat("llama3.2", "Summarize quantum computing")
 
 **This isn't basic load balancing.** This is production-grade intelligent routing with complete observability, working out of the box.
 
-### 🚀 NEW: SOLLOL - Drop-in Ollama Replacement (Port 11434)
+### 🚀 NEW: SOLLOL - Enhanced Ollama on Port 11434
 
-**SOLLOL runs on port 11434 (Ollama's port) - your apps don't change!**
+**SOLLOL IS your Ollama - just run it!**
 
 ```bash
-# 1. (Optional) Stop local Ollama or move it to different port
-sudo systemctl stop ollama
-# OR: OLLAMA_HOST=0.0.0.0:11435 ollama serve &
-
-# 2. (Optional) Start RPC servers on worker nodes for distributed inference
-# rpc-server --host 0.0.0.0 --port 50052 --mem 2048
-
-# 3. Start SOLLOL - auto-discovers EVERYTHING!
+# Start SOLLOL on port 11434 (the Ollama port)
 ./start_gateway.sh
 
-# SOLLOL running on http://localhost:11434 (Ollama's port!)
-# ✅ Auto-discovers Ollama nodes on network (excluding localhost)
-# ✅ Auto-discovers RPC servers (port 50052)
+# SOLLOL running on http://localhost:11434
+# ✅ Auto-discovers Ollama nodes on network
+# ✅ Auto-discovers RPC servers for distributed inference
 # ✅ Auto-extracts GGUF from Ollama storage
-# ✅ Automatic routing (small → Ollama pool, large → distributed)
+# ✅ Intelligent routing (small → Ollama pool, large → distributed)
+
+# (Optional) Enable distributed inference by starting RPC servers on worker nodes:
+# rpc-server --host 0.0.0.0 --port 50052 --mem 2048
 ```
 
 **Your apps work unchanged:**
