@@ -29,35 +29,39 @@ _ollama_pool: Optional[OllamaPool] = None
 _hybrid_router: Optional[HybridRouter] = None
 
 def start_api(
-    port: int = 8000,
+    port: int = 11434,
     rpc_backends: Optional[List[Dict]] = None,
     ollama_nodes: Optional[List[Dict]] = None
 ):
     """
-    Start SynapticLlamas gateway with distributed inference support.
+    Start SOLLOL gateway - Drop-in Ollama replacement with distributed inference.
+
+    SOLLOL listens on port 11434 (standard Ollama port) and provides:
+    - Intelligent load balancing across Ollama nodes
+    - Distributed inference for large models via llama.cpp
+    - Automatic GGUF extraction from Ollama storage
+    - Zero-config auto-discovery
 
     ENVIRONMENT CONFIGURATION:
+        PORT - Gateway port (default: 11434, the standard Ollama port)
         RPC_BACKENDS - Comma-separated RPC servers (e.g., "192.168.1.10:50052,192.168.1.11:50052")
         OLLAMA_NODES - Comma-separated Ollama nodes (optional, auto-discovers if not set)
 
     Args:
-        port: Port to run gateway on (default: 8000)
+        port: Port to run gateway on (default: 11434 - Ollama's port)
         rpc_backends: List of RPC backend dicts [{"host": "ip", "port": 50052}]
         ollama_nodes: List of Ollama node dicts (auto-discovers if None)
 
     Example:
-        # With environment variables:
-        export RPC_BACKENDS="192.168.1.10:50052,192.168.1.11:50052"
-        python -c "from sollol.gateway import start_api; start_api()"
+        # Zero-config (auto-discovers everything):
+        python -m sollol.gateway
 
-        # Programmatically:
-        start_api(
-            port=8000,
-            rpc_backends=[
-                {"host": "192.168.1.10", "port": 50052},
-                {"host": "192.168.1.11", "port": 50052}
-            ]
-        )
+        # With manual RPC backends:
+        export RPC_BACKENDS="192.168.1.10:50052,192.168.1.11:50052"
+        python -m sollol.gateway
+
+    Note: SOLLOL runs on port 11434 (Ollama's port). Make sure local Ollama
+          is either disabled or running on a different port (e.g., 11435).
     """
     global _ollama_pool, _hybrid_router
 
@@ -84,10 +88,16 @@ def start_api(
             else:
                 logger.info("📡 No RPC backends found (distributed inference disabled)")
 
-    # Create Ollama pool (auto-discovers if nodes not specified)
+    # Create Ollama pool (auto-discovers remote nodes, excludes localhost since we're on 11434)
     logger.info("🔍 Initializing Ollama pool...")
-    _ollama_pool = OllamaPool(nodes=ollama_nodes)
-    logger.info(f"✅ Ollama pool initialized with {len(_ollama_pool.nodes)} nodes")
+    logger.info("   Excluding localhost (SOLLOL running on this port)")
+    _ollama_pool = OllamaPool(nodes=ollama_nodes, exclude_localhost=True)
+
+    if len(_ollama_pool.nodes) > 0:
+        logger.info(f"✅ Ollama pool initialized with {len(_ollama_pool.nodes)} remote nodes")
+    else:
+        logger.info("📡 No remote Ollama nodes found (will only use distributed inference)")
+        logger.info("   To use Ollama pool: run Ollama on other machines in your network")
 
     # Create hybrid router with distributed support if RPC backends configured
     if rpc_backends:
@@ -289,20 +299,22 @@ if __name__ == "__main__":
     )
 
     # Parse command line args
-    port = int(os.getenv("PORT", "8000"))
+    port = int(os.getenv("PORT", "11434"))
 
     print("=" * 70)
-    print(" SynapticLlamas Gateway")
+    print(" SOLLOL Gateway - Drop-in Ollama Replacement")
     print("=" * 70)
     print()
     print("Features:")
+    print("  ✅ Listens on port 11434 (standard Ollama port)")
+    print("  ✅ Auto-discovers Ollama nodes on network")
+    print("  ✅ Auto-discovers RPC backends for distributed inference")
     print("  ✅ Automatic GGUF extraction from Ollama storage")
-    print("  ✅ Distributed inference for large models (405B+)")
-    print("  ✅ Intelligent load balancing")
+    print("  ✅ Intelligent load balancing and routing")
     print("  ✅ Zero-config setup")
     print()
     print("Configuration:")
-    print(f"  PORT: {port}")
+    print(f"  PORT: {port} (Ollama's standard port)")
 
     rpc_env = os.getenv("RPC_BACKENDS", "")
     if rpc_env:

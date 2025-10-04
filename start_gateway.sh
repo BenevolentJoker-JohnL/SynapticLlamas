@@ -1,11 +1,14 @@
 #!/bin/bash
-# SynapticLlamas Gateway - Quick Start Script
+# SOLLOL Gateway - Drop-in Ollama Replacement
 #
-# This script starts the SynapticLlamas gateway with distributed inference support.
+# This script starts SOLLOL on port 11434 (Ollama's port) with:
+# - Auto-discovery of Ollama nodes on network
+# - Auto-discovery of RPC backends for distributed inference
+# - Automatic GGUF extraction from Ollama storage
 #
 # Usage:
-#   ./start_gateway.sh                    # Ollama-only mode
-#   ./start_gateway.sh 192.168.1.10:50052,192.168.1.11:50052  # With distributed inference
+#   ./start_gateway.sh                    # Auto-discover everything
+#   ./start_gateway.sh 192.168.1.10:50052,192.168.1.11:50052  # Manual RPC backends
 
 set -e  # Exit on error
 
@@ -13,17 +16,29 @@ set -e  # Exit on error
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 echo "======================================================================="
-echo " SynapticLlamas Gateway - Distributed AI Orchestration"
+echo " SOLLOL Gateway - Drop-in Ollama Replacement"
 echo "======================================================================="
 echo ""
 
-# Check if Ollama is running
-if ! curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-    echo -e "${YELLOW}⚠️  Warning: Ollama doesn't seem to be running on localhost:11434${NC}"
-    echo "   Start Ollama with: ollama serve"
+# Check if something is already running on 11434
+if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
+    echo -e "${YELLOW}⚠️  Port 11434 is already in use!${NC}"
+    echo "   This is likely local Ollama. SOLLOL needs this port."
+    echo ""
+    echo "Options:"
+    echo "  1. Stop local Ollama: sudo systemctl stop ollama"
+    echo "  2. Move Ollama to different port: OLLAMA_HOST=0.0.0.0:11435 ollama serve"
+    echo "  3. Use SOLLOL on different port: PORT=8000 ./start_gateway.sh"
+    echo ""
+    read -p "Continue anyway? (y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
     echo ""
 fi
 
@@ -50,12 +65,22 @@ else
     echo ""
 fi
 
-# Set port (default: 8000)
-export PORT="${PORT:-8000}"
+# Set port (default: 11434 - Ollama's port)
+export PORT="${PORT:-11434}"
 
 echo "======================================================================="
 echo ""
-echo -e "${GREEN}🚀 Starting gateway on port $PORT...${NC}"
+echo -e "${GREEN}🚀 Starting SOLLOL gateway on port $PORT (Ollama's port)${NC}"
+echo ""
+echo "What SOLLOL does:"
+echo "  ✅ Discovers Ollama nodes on your network automatically"
+echo "  ✅ Discovers RPC backends for distributed inference"
+echo "  ✅ Extracts GGUF from Ollama storage automatically"
+echo "  ✅ Routes small models → Ollama pool, large models → distributed"
+echo ""
+echo "Your apps can now use: http://localhost:$PORT (just like Ollama!)"
+echo ""
+echo "======================================================================="
 echo ""
 
 # Start the gateway

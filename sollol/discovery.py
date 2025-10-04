@@ -16,18 +16,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 logger = logging.getLogger(__name__)
 
 
-def discover_ollama_nodes(timeout: float = 0.5) -> List[Dict[str, str]]:
+def discover_ollama_nodes(timeout: float = 0.5, exclude_localhost: bool = False) -> List[Dict[str, str]]:
     """
     Discover Ollama nodes using multiple strategies.
     Returns in under 1 second.
 
+    Args:
+        timeout: Connection timeout per node
+        exclude_localhost: If True, skip localhost (useful when SOLLOL runs on 11434)
+
     Returns:
-        List of node dicts: [{"host": "localhost", "port": "11434"}, ...]
+        List of node dicts: [{"host": "192.168.1.10", "port": "11434"}, ...]
     """
     strategies = [
-        _from_environment,      # Instant
-        _from_known_locations,  # Instant (~100ms)
-        _from_network_scan,     # ~500ms
+        lambda t: _from_environment(t, exclude_localhost),
+        lambda t: _from_known_locations(t, exclude_localhost),
+        lambda t: _from_network_scan(t, exclude_localhost),
     ]
 
     for strategy in strategies:
@@ -36,27 +40,38 @@ def discover_ollama_nodes(timeout: float = 0.5) -> List[Dict[str, str]]:
             logger.debug(f"Discovered {len(nodes)} nodes via {strategy.__name__}")
             return nodes
 
-    # Fallback to localhost
-    logger.debug("No nodes discovered, falling back to localhost")
-    return [{"host": "localhost", "port": "11434"}]
+    # Fallback: only use localhost if not excluded
+    if not exclude_localhost:
+        logger.debug("No nodes discovered, falling back to localhost")
+        return [{"host": "localhost", "port": "11434"}]
+    else:
+        logger.debug("No remote Ollama nodes discovered (localhost excluded)")
+        return []
 
 
-def _from_environment(timeout: float) -> List[Dict[str, str]]:
+def _from_environment(timeout: float, exclude_localhost: bool = False) -> List[Dict[str, str]]:
     """Check OLLAMA_HOST environment variable."""
     host = os.getenv('OLLAMA_HOST', '').strip()
     if host:
         parsed = _parse_host(host)
+        # Skip if localhost and excluded
+        if exclude_localhost and parsed['host'] in ('localhost', '127.0.0.1'):
+            return []
         if _is_ollama_running(parsed['host'], int(parsed['port']), timeout):
             return [parsed]
     return []
 
 
-def _from_known_locations(timeout: float) -> List[Dict[str, str]]:
+def _from_known_locations(timeout: float, exclude_localhost: bool = False) -> List[Dict[str, str]]:
     """Check common Ollama locations."""
     locations = [
         ("localhost", 11434),
         ("127.0.0.1", 11434),
     ]
+
+    # Skip localhost checks if excluded
+    if exclude_localhost:
+        return []
 
     results = []
     for host, port in locations:
@@ -66,7 +81,7 @@ def _from_known_locations(timeout: float) -> List[Dict[str, str]]:
     return results
 
 
-def _from_network_scan(timeout: float) -> List[Dict[str, str]]:
+def _from_network_scan(timeout: float, exclude_localhost: bool = False) -> List[Dict[str, str]]:
     """
     Fast parallel network scan of local subnet.
 
@@ -79,6 +94,9 @@ def _from_network_scan(timeout: float) -> List[Dict[str, str]]:
 
     def check_host(ip: str) -> Optional[Dict[str, str]]:
         """Check if Ollama is running on this IP."""
+        # Skip localhost IPs if excluded
+        if exclude_localhost and ip in ('127.0.0.1', f"{subnet}.1"):
+            return None
         if _is_port_open(ip, 11434, timeout / 254):
             if _is_ollama_running(ip, 11434, timeout):
                 return {"host": ip, "port": "11434"}

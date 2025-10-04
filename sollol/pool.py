@@ -32,7 +32,8 @@ class OllamaPool:
     def __init__(
         self,
         nodes: Optional[List[Dict[str, str]]] = None,
-        enable_intelligent_routing: bool = True
+        enable_intelligent_routing: bool = True,
+        exclude_localhost: bool = False
     ):
         """
         Initialize connection pool with full observability.
@@ -40,8 +41,10 @@ class OllamaPool:
         Args:
             nodes: List of node dicts. If None, auto-discovers.
             enable_intelligent_routing: Use intelligent routing (default: True)
+            exclude_localhost: Skip localhost during discovery (for SOLLOL gateway)
         """
         self.nodes = nodes or []
+        self.exclude_localhost = exclude_localhost
         self._lock = threading.Lock()
         self._current_index = 0
 
@@ -84,12 +87,19 @@ class OllamaPool:
         """Discover Ollama nodes automatically."""
         from .discovery import discover_ollama_nodes
 
-        logger.debug("Auto-discovering Ollama nodes...")
-        nodes = discover_ollama_nodes(timeout=0.5)
+        if self.exclude_localhost:
+            logger.debug("Auto-discovering Ollama nodes (excluding localhost)...")
+        else:
+            logger.debug("Auto-discovering Ollama nodes...")
+
+        nodes = discover_ollama_nodes(timeout=0.5, exclude_localhost=self.exclude_localhost)
 
         with self._lock:
             self.nodes = nodes
-            logger.info(f"Auto-discovered {len(nodes)} nodes: {nodes}")
+            if self.exclude_localhost and len(nodes) == 0:
+                logger.info("No remote Ollama nodes found (localhost excluded)")
+            else:
+                logger.info(f"Auto-discovered {len(nodes)} nodes: {nodes}")
 
     def _init_node_metadata(self):
         """Initialize metadata for each node for intelligent routing."""

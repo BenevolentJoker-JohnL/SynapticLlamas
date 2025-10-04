@@ -38,25 +38,33 @@ response = client.chat("llama3.2", "Summarize quantum computing")
 
 **This isn't basic load balancing.** This is production-grade intelligent routing with complete observability, working out of the box.
 
-### 🚀 NEW: Gateway with Auto-Discovery & Distributed Inference
+### 🚀 NEW: SOLLOL - Drop-in Ollama Replacement (Port 11434)
 
-**Stupid easy setup - ONE command, everything auto-discovered:**
+**SOLLOL runs on port 11434 (Ollama's port) - your apps don't change!**
 
 ```bash
-# 1. Pull model in Ollama
-ollama pull llama3.2  # or llama3.1:405b for large models
+# 1. (Optional) Stop local Ollama or move it to different port
+sudo systemctl stop ollama
+# OR: OLLAMA_HOST=0.0.0.0:11435 ollama serve &
 
 # 2. (Optional) Start RPC servers on worker nodes for distributed inference
 # rpc-server --host 0.0.0.0 --port 50052 --mem 2048
 
-# 3. Start gateway - auto-discovers EVERYTHING!
+# 3. Start SOLLOL - auto-discovers EVERYTHING!
 ./start_gateway.sh
 
-# Gateway running on http://localhost:8000
-# ✅ Auto-discovers Ollama nodes (port 11434)
+# SOLLOL running on http://localhost:11434 (Ollama's port!)
+# ✅ Auto-discovers Ollama nodes on network (excluding localhost)
 # ✅ Auto-discovers RPC servers (port 50052)
 # ✅ Auto-extracts GGUF from Ollama storage
-# ✅ Automatic routing (small → Ollama, large → distributed)
+# ✅ Automatic routing (small → Ollama pool, large → distributed)
+```
+
+**Your apps work unchanged:**
+```bash
+# All existing Ollama apps just work!
+curl http://localhost:11434/api/chat -d '...'  # Uses SOLLOL transparently
+ollama run llama3.2  # Works (set OLLAMA_HOST=http://localhost:11434)
 ```
 
 **Or use the Python SDK:**

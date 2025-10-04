@@ -45,19 +45,20 @@ Large Models (> 70B)  →  llama.cpp Distributed (auto-extracts GGUF from Ollama
 
 **Two ways to use SynapticLlamas:**
 
-### Option 1: Gateway (Recommended for Production)
+### Option 1: SOLLOL Gateway (Recommended - Port 11434)
 
-**Stupid easy setup - ONE command!**
+**SOLLOL replaces Ollama on port 11434 - your apps don't change!**
 
 ```bash
-# 1. Pull model in Ollama
-ollama pull llama3.2
+# 1. Stop or move local Ollama (SOLLOL needs port 11434)
+sudo systemctl stop ollama
+# OR move it: OLLAMA_HOST=0.0.0.0:11435 ollama serve &
 
-# 2. Start gateway
+# 2. Start SOLLOL - auto-discovers everything!
 ./start_gateway.sh
 
-# Gateway running on http://localhost:8000
-# All requests go through ONE endpoint!
+# SOLLOL running on http://localhost:11434 (Ollama's port!)
+# Your apps work unchanged!
 ```
 
 **With distributed inference:**
@@ -67,7 +68,7 @@ ollama pull llama3.2
 # Node 1: rpc-server --host 0.0.0.0 --port 50052 --mem 2048
 # Node 2: rpc-server --host 0.0.0.0 --port 50052 --mem 2048
 
-# Start gateway - auto-discovers RPC servers!
+# Start SOLLOL - auto-discovers RPC servers!
 ./start_gateway.sh
 
 # Or manually specify backends:
@@ -75,25 +76,29 @@ ollama pull llama3.2
 ```
 
 **How it works:**
-1. Start RPC servers on worker nodes (port 50052)
-2. Start gateway (no configuration needed!)
-3. Gateway auto-discovers both Ollama nodes AND RPC servers
+1. SOLLOL starts on port 11434 (Ollama's standard port)
+2. Auto-discovers Ollama nodes on network (excludes localhost)
+3. Auto-discovers RPC backends on port 50052
 4. Requests are automatically routed based on model size
 
 **Truly zero-config distributed inference!**
 
-**Make requests:**
+**Make requests (unchanged from Ollama!):**
 
 ```bash
-# Small model → Ollama
-curl -X POST http://localhost:8000/api/chat \
+# Small model → Ollama pool
+curl -X POST http://localhost:11434/api/chat \
   -H "Content-Type: application/json" \
   -d '{"model": "llama3.2", "messages": [{"role": "user", "content": "Hello!"}]}'
 
-# Large model → Distributed (GGUF auto-extracted from Ollama!)
-curl -X POST http://localhost:8000/api/chat \
+# Large model → Distributed (GGUF auto-extracted!)
+curl -X POST http://localhost:11434/api/chat \
   -H "Content-Type: application/json" \
   -d '{"model": "llama3.1:405b", "messages": [{"role": "user", "content": "Explain quantum computing"}]}'
+
+# Ollama CLI also works (point to SOLLOL)
+export OLLAMA_HOST=http://localhost:11434
+ollama run llama3.2  # Uses SOLLOL transparently!
 ```
 
 ### Option 2: Python SDK (For Custom Applications)
