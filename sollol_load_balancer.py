@@ -29,6 +29,7 @@ from sollol.prioritization import (
     PRIORITY_BATCH
 )
 from sollol.adapters import PerformanceMemory, MetricsCollector
+from sollol.gpu_controller import SOLLOLGPUController, integrate_with_router
 
 # Import existing SynapticLlamas modules
 from node_registry import NodeRegistry
@@ -60,12 +61,13 @@ class SOLLOLLoadBalancer:
     - Automatic failover with reasoning
     """
 
-    def __init__(self, registry: NodeRegistry):
+    def __init__(self, registry: NodeRegistry, enable_gpu_control: bool = True):
         """
         Initialize SOLLOL load balancer.
 
         Args:
             registry: Node registry for managing Ollama nodes
+            enable_gpu_control: Enable active GPU controller integration
         """
         self.registry = registry
 
@@ -74,6 +76,14 @@ class SOLLOLLoadBalancer:
         self.priority_queue = PriorityQueue()
         self.memory = PerformanceMemory()
         self.metrics = MetricsCollector()
+
+        # GPU controller (CRITICAL for SOLLOL's performance promise)
+        self.gpu_controller = None
+        if enable_gpu_control:
+            self.gpu_controller = SOLLOLGPUController(registry)
+            logger.info("🚀 GPU controller enabled - ensuring models run on GPU")
+        else:
+            logger.warning("⚠️  GPU controller disabled - routing may not optimize performance")
 
         logger.info("🚀 SOLLOL Load Balancer initialized with intelligent routing")
 
@@ -114,18 +124,27 @@ class SOLLOLLoadBalancer:
         if not healthy_nodes:
             raise RuntimeError("No healthy Ollama nodes available")
 
+        logger.debug(f"📊 [ROUTING DEBUG] Healthy nodes: {[n.url for n in healthy_nodes]}")
+        logger.debug(f"📊 [ROUTING DEBUG] Registry nodes: {list(self.registry.nodes.keys())}")
+
         # Step 3: Convert nodes to host metadata for SOLLOL
         available_hosts = [self._node_to_host_metadata(node) for node in healthy_nodes]
+        logger.debug(f"📊 [ROUTING DEBUG] Available hosts metadata: {[h['url'] for h in available_hosts]}")
 
         # Step 4: Use SOLLOL intelligent router to select optimal node
         selected_host, decision_metadata = self.intelligence.select_optimal_node(
             context, available_hosts
         )
+        logger.debug(f"📊 [ROUTING DEBUG] SOLLOL selected host URL: {selected_host}")
 
         # Step 5: Find the OllamaNode object for the selected host
         selected_node = next(
             (node for node in healthy_nodes if node.url == selected_host),
             None
+        )
+        logger.debug(
+            f"📊 [ROUTING DEBUG] Matched node: {selected_node.url if selected_node else 'NONE'}, "
+            f"object ID: {id(selected_node) if selected_node else 'N/A'}"
         )
 
         if not selected_node:
@@ -168,6 +187,24 @@ class SOLLOLLoadBalancer:
             f"(score: {decision.decision_score:.1f}, time: {routing_time:.1f}ms)"
         )
         logger.debug(f"   Reasoning: {decision.reasoning}")
+
+        # GPU verification (if GPU controller enabled and GPU expected)
+        if self.gpu_controller and context.requires_gpu:
+            model = context.model_preference or payload.get('model', '')
+            if model:
+                # Verify model is on GPU, force load if not
+                verified = self.gpu_controller.verify_routing_decision(
+                    selected_node.url,
+                    model,
+                    expected_location='GPU'
+                )
+
+                if not verified:
+                    logger.warning(
+                        f"⚠️  Model {model} not on GPU at {selected_node.url}, "
+                        "forcing GPU load..."
+                    )
+                    self.gpu_controller.force_gpu_load(selected_node.url, model)
 
         return decision
 
@@ -231,6 +268,17 @@ class SOLLOLLoadBalancer:
             success: Whether request succeeded
             error: Error message if failed
         """
+        logger.debug(
+            f"📊 [METRICS DEBUG] Recording performance for {decision.node.url} "
+            f"(duration: {actual_duration_ms:.0f}ms, success: {success})"
+        )
+        logger.debug(f"📊 [METRICS DEBUG] Node object ID: {id(decision.node)}")
+        logger.debug(
+            f"📊 [METRICS DEBUG] BEFORE - total_requests: {decision.node.metrics.total_requests}, "
+            f"avg_response_time: {decision.node.metrics.avg_response_time:.2f}s, "
+            f"avg_latency: {decision.node.metrics.avg_latency:.0f}ms"
+        )
+
         # Update SOLLOL performance memory
         self.memory.record_execution(
             node_url=decision.node.url,
@@ -251,12 +299,53 @@ class SOLLOLLoadBalancer:
         )
 
         # Update node metrics in registry
+        decision.node.metrics.total_requests += 1
         if success:
-            decision.node.metrics.total_requests += 1
-            decision.node.metrics.successful_requests += 1
+            # successful_requests is auto-calculated as total - failed
+            pass
         else:
-            decision.node.metrics.total_requests += 1
             decision.node.metrics.failed_requests += 1
+            # Note: last_error is a property, can't be set directly
+            # TODO: Add actual error tracking if needed
+
+        # Update average latency using exponential moving average
+        # This gives more weight to recent requests
+        # Note: avg_response_time is in seconds, actual_duration_ms is in milliseconds
+        alpha = 0.3  # Smoothing factor (0-1, higher = more weight to new values)
+        actual_duration_s = actual_duration_ms / 1000.0  # Convert to seconds
+
+        if decision.node.metrics.avg_response_time == 0:
+            # First request
+            decision.node.metrics.avg_response_time = actual_duration_s
+        else:
+            # EMA: new_avg = alpha * new_value + (1 - alpha) * old_avg
+            decision.node.metrics.avg_response_time = (
+                alpha * actual_duration_s +
+                (1 - alpha) * decision.node.metrics.avg_response_time
+            )
+
+        logger.debug(
+            f"📊 [METRICS DEBUG] AFTER - total_requests: {decision.node.metrics.total_requests}, "
+            f"avg_response_time: {decision.node.metrics.avg_response_time:.2f}s, "
+            f"avg_latency: {decision.node.metrics.avg_latency:.0f}ms"
+        )
+
+        # Verify the node is in the registry
+        node_in_registry = decision.node.url in self.registry.nodes
+        logger.debug(
+            f"📊 [METRICS DEBUG] Node {decision.node.url} in registry: {node_in_registry}"
+        )
+        if node_in_registry:
+            registry_node = self.registry.nodes[decision.node.url]
+            logger.debug(
+                f"📊 [METRICS DEBUG] Registry node object ID: {id(registry_node)}, "
+                f"same as decision node: {id(registry_node) == id(decision.node)}"
+            )
+            logger.debug(
+                f"📊 [METRICS DEBUG] Registry node metrics - "
+                f"total_requests: {registry_node.metrics.total_requests}, "
+                f"avg_latency: {registry_node.metrics.avg_latency:.0f}ms"
+            )
 
         # Calculate prediction accuracy
         predicted_duration = decision.task_context.estimated_duration_ms
@@ -267,6 +356,34 @@ class SOLLOLLoadBalancer:
             f"(predicted: {predicted_duration:.0f}ms, actual: {actual_duration_ms:.0f}ms, "
             f"accuracy: {accuracy:.1%})"
         )
+
+    def get_node(self, strategy=None, payload: Optional[Dict[str, Any]] = None) -> OllamaNode:
+        """
+        Get optimal node using SOLLOL routing (backward compatibility method).
+
+        This method provides backward compatibility with the old OllamaLoadBalancer API.
+        It wraps route_request() but returns just the OllamaNode object.
+
+        Args:
+            strategy: Routing strategy (ignored, SOLLOL uses intelligent routing)
+            payload: Optional request payload for context-aware routing
+
+        Returns:
+            OllamaNode instance
+        """
+        # Use intelligent routing if payload provided, else simple selection
+        if payload:
+            decision = self.route_request(payload)
+            return decision.node
+        else:
+            # Simple fallback: return least loaded healthy node
+            healthy_nodes = self.registry.get_healthy_nodes()
+            if not healthy_nodes:
+                raise RuntimeError("No healthy Ollama nodes available")
+
+            # Sort by load score (lower is better)
+            sorted_nodes = sorted(healthy_nodes, key=lambda n: n.calculate_load_score())
+            return sorted_nodes[0]
 
     def get_routing_metadata(self, decision: RoutingDecision) -> Dict[str, Any]:
         """
@@ -308,27 +425,84 @@ class SOLLOLLoadBalancer:
         Returns:
             Host metadata dict
         """
+        # Calculate metrics
+        load_score = node.calculate_load_score()
+        success_rate = (
+            node.metrics.successful_requests / node.metrics.total_requests
+            if node.metrics.total_requests > 0 else 1.0
+        )
+        avg_latency_ms = node.metrics.avg_latency
+
         return {
             'url': node.url,
             'host': node.url,
             'health': 'healthy' if node.is_healthy else 'unhealthy',
+            'available': node.is_healthy,  # Required by scoring function
+
+            # Top-level metrics expected by scoring function
+            'cpu_load': load_score / 100.0,  # Convert 0-100 to 0-1
+            'latency_ms': avg_latency_ms,    # Average latency in ms
+            'success_rate': success_rate,     # 0-1 success rate
+            'gpu_free_mem': node.capabilities.gpu_memory_mb if (node.capabilities and node.capabilities.has_gpu) else 0,
+
             'capabilities': {
                 'has_gpu': node.capabilities.has_gpu if node.capabilities else False,
                 'gpu_memory_mb': node.capabilities.gpu_memory_mb if node.capabilities else 0,
                 'cpu_count': node.capabilities.cpu_count if node.capabilities else 1,
             },
+            # Add top-level cpu_count for SOLLOL scoring
+            'cpu_count': node.capabilities.cpu_count if node.capabilities else 1,
             'metrics': {
-                'current_load': node.calculate_load_score(),
+                'current_load': load_score,
                 'total_requests': node.metrics.total_requests,
-                'success_rate': (
-                    node.metrics.successful_requests / node.metrics.total_requests
-                    if node.metrics.total_requests > 0 else 1.0
-                ),
-                'avg_latency_ms': node.metrics.avg_latency,
+                'success_rate': success_rate,
+                'avg_latency_ms': avg_latency_ms,
                 'last_health_check': node.last_health_check.isoformat() if node.last_health_check else None,
             },
             'priority': node.priority,
         }
+
+    def pre_warm_gpu_models(self, priority_models: List[str]) -> Dict:
+        """
+        Pre-warm GPU nodes with priority models.
+
+        This ensures first requests don't wait for model loading.
+
+        Args:
+            priority_models: Models to pre-load on GPU nodes
+
+        Returns:
+            Pre-warming report
+        """
+        if not self.gpu_controller:
+            logger.warning("GPU controller not enabled, cannot pre-warm")
+            return {'error': 'GPU controller not enabled'}
+
+        return self.gpu_controller.pre_warm_gpu_nodes(priority_models)
+
+    def optimize_gpu_cluster(self, priority_models: List[str]) -> Dict:
+        """
+        Optimize GPU/CPU placement across the cluster.
+
+        Args:
+            priority_models: Models that should be on GPU
+
+        Returns:
+            Optimization report
+        """
+        if not self.gpu_controller:
+            logger.warning("GPU controller not enabled, cannot optimize")
+            return {'error': 'GPU controller not enabled'}
+
+        return self.gpu_controller.optimize_cluster(priority_models)
+
+    def print_gpu_status(self):
+        """Print cluster GPU/CPU status."""
+        if not self.gpu_controller:
+            logger.warning("GPU controller not enabled")
+            return
+
+        self.gpu_controller.print_cluster_status()
 
     def get_stats(self) -> Dict[str, Any]:
         """
@@ -340,13 +514,14 @@ class SOLLOLLoadBalancer:
         healthy_nodes = self.registry.get_healthy_nodes()
         gpu_nodes = self.registry.get_gpu_nodes()
 
-        return {
+        stats = {
             'load_balancer': {
                 'type': 'SOLLOL',
                 'version': '1.0.0',
                 'intelligent_routing': True,
                 'priority_queue': True,
                 'adaptive_learning': True,
+                'gpu_control': self.gpu_controller is not None,
             },
             'nodes': {
                 'total': len(self.registry.nodes),
@@ -367,13 +542,21 @@ class SOLLOLLoadBalancer:
             }
         }
 
+        # Add GPU stats if controller enabled
+        if self.gpu_controller:
+            stats['gpu'] = self.gpu_controller.get_placement_stats()
+
+        return stats
+
     def __repr__(self):
         healthy = len(self.registry.get_healthy_nodes())
         gpu = len(self.registry.get_gpu_nodes())
+        gpu_control = "enabled" if self.gpu_controller else "disabled"
         return (
             f"SOLLOLLoadBalancer("
             f"nodes={len(self.registry)}, healthy={healthy}, gpu={gpu}, "
-            f"intelligent_routing=enabled, adaptive_learning=enabled)"
+            f"intelligent_routing=enabled, adaptive_learning=enabled, "
+            f"gpu_control={gpu_control})"
         )
 
 

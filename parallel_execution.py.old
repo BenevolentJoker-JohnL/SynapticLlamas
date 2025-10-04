@@ -1,0 +1,402 @@
+"""
+Parallel Agent Execution Engine for SynapticLlamas
+
+Enables concurrent agent execution across multiple Ollama nodes using SOLLOL
+for intelligent load distribution. Agents run in parallel rather than sequentially,
+dramatically reducing total execution time.
+
+Features:
+- AsyncIO-based concurrent execution
+- Automatic load distribution via SOLLOL
+- Result aggregation and merging
+- Error handling with fallback
+- Real-time progress tracking
+"""
+import asyncio
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict, Any, Optional, Callable
+from dataclasses import dataclass
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AgentTask:
+    """Represents a single agent task to be executed."""
+    agent_name: str
+    prompt: str
+    system_prompt: Optional[str] = None
+    priority: int = 5
+    metadata: Dict[str, Any] = None
+
+    def __post_init__(self):
+        if self.metadata is None:
+            self.metadata = {}
+
+
+@dataclass
+class TaskResult:
+    """Result from an agent task execution."""
+    agent_name: str
+    result: Any
+    duration_ms: float
+    node_url: str
+    success: bool
+    error: Optional[str] = None
+    timestamp: datetime = None
+
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.now()
+
+
+class ParallelExecutor:
+    """
+    Executes multiple agent tasks concurrently across distributed Ollama nodes.
+
+    Uses SOLLOL for intelligent routing and load balancing.
+    """
+
+    def __init__(self, orchestrator, max_workers: int = 10):
+        """
+        Initialize parallel executor.
+
+        Args:
+            orchestrator: DistributedOrchestrator instance
+            max_workers: Maximum concurrent workers
+        """
+        self.orchestrator = orchestrator
+        self.max_workers = max_workers
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+
+    def execute_parallel(
+        self,
+        tasks: List[AgentTask],
+        merge_strategy: str = "collect"
+    ) -> Dict[str, Any]:
+        """
+        Execute multiple agent tasks in parallel.
+
+        Args:
+            tasks: List of AgentTask objects to execute
+            merge_strategy: How to combine results ("collect", "vote", "merge")
+
+        Returns:
+            Dict with results, timing, and metadata
+        """
+        start_time = time.time()
+        logger.info(f"🚀 Starting parallel execution of {len(tasks)} tasks across {len(self.orchestrator.registry.get_healthy_nodes())} nodes")
+
+        # Submit all tasks concurrently
+        futures = {}
+        for task in tasks:
+            future = self.executor.submit(self._execute_task, task)
+            futures[future] = task
+
+        # Collect results as they complete
+        results = []
+        for future in as_completed(futures):
+            task = futures[future]
+            try:
+                result = future.result()
+                results.append(result)
+
+                status_icon = "✅" if result.success else "❌"
+                logger.info(
+                    f"{status_icon} {result.agent_name} completed in {result.duration_ms:.0f}ms "
+                    f"on {result.node_url}"
+                )
+            except Exception as e:
+                logger.error(f"❌ Task {task.agent_name} failed: {e}")
+                results.append(TaskResult(
+                    agent_name=task.agent_name,
+                    result=None,
+                    duration_ms=0,
+                    node_url="unknown",
+                    success=False,
+                    error=str(e)
+                ))
+
+        total_time = (time.time() - start_time) * 1000
+
+        # Merge results based on strategy
+        merged_result = self._merge_results(results, merge_strategy)
+
+        # Calculate statistics
+        successful = [r for r in results if r.success]
+        avg_duration = sum(r.duration_ms for r in successful) / len(successful) if successful else 0
+
+        logger.info(
+            f"✨ Parallel execution complete: {len(successful)}/{len(tasks)} successful "
+            f"in {total_time:.0f}ms (avg: {avg_duration:.0f}ms per task)"
+        )
+
+        return {
+            'merged_result': merged_result,
+            'individual_results': results,
+            'statistics': {
+                'total_tasks': len(tasks),
+                'successful': len(successful),
+                'failed': len(results) - len(successful),
+                'total_duration_ms': total_time,
+                'avg_task_duration_ms': avg_duration,
+                'speedup_factor': (sum(r.duration_ms for r in results) / total_time) if total_time > 0 else 1.0
+            },
+            'timestamp': datetime.now().isoformat()
+        }
+
+    def _execute_task(self, task: AgentTask) -> TaskResult:
+        """Execute a single agent task."""
+        start_time = time.time()
+
+        try:
+            # Get or create agent
+            agent = self.orchestrator.get_agent(task.agent_name)
+
+            # Execute with SOLLOL routing
+            result = agent.call_ollama(
+                prompt=task.prompt,
+                system_prompt=task.system_prompt
+            )
+
+            duration_ms = (time.time() - start_time) * 1000
+
+            # Get the node that was used (from agent's last used URL)
+            node_url = agent.ollama_url if hasattr(agent, 'ollama_url') else "unknown"
+
+            return TaskResult(
+                agent_name=task.agent_name,
+                result=result,
+                duration_ms=duration_ms,
+                node_url=node_url,
+                success=True
+            )
+
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            logger.error(f"Task {task.agent_name} failed: {e}")
+
+            return TaskResult(
+                agent_name=task.agent_name,
+                result=None,
+                duration_ms=duration_ms,
+                node_url="unknown",
+                success=False,
+                error=str(e)
+            )
+
+    def _merge_results(self, results: List[TaskResult], strategy: str) -> Any:
+        """
+        Merge multiple task results based on strategy.
+
+        Args:
+            results: List of TaskResult objects
+            strategy: Merge strategy ("collect", "vote", "merge", "best")
+
+        Returns:
+            Merged result
+        """
+        successful = [r for r in results if r.success]
+
+        if not successful:
+            return None
+
+        if strategy == "collect":
+            # Return all results as a list
+            return [r.result for r in successful]
+
+        elif strategy == "vote":
+            # Return most common result
+            from collections import Counter
+            result_strings = [str(r.result) for r in successful]
+            most_common = Counter(result_strings).most_common(1)[0][0]
+            # Find the actual result object that matches
+            for r in successful:
+                if str(r.result) == most_common:
+                    return r.result
+            return successful[0].result
+
+        elif strategy == "merge":
+            # Concatenate all results
+            return "\n\n---\n\n".join(str(r.result) for r in successful)
+
+        elif strategy == "best":
+            # Return result from fastest/highest priority agent
+            best = min(successful, key=lambda r: r.duration_ms)
+            return best.result
+
+        else:
+            # Default: collect
+            return [r.result for r in successful]
+
+    def execute_brainstorm(
+        self,
+        prompt: str,
+        num_agents: int = 3,
+        agent_prefix: str = "Brainstorm"
+    ) -> Dict[str, Any]:
+        """
+        Brainstorm solutions by running multiple agents in parallel.
+
+        Args:
+            prompt: The problem/question to brainstorm
+            num_agents: Number of agents to run in parallel
+            agent_prefix: Prefix for agent names
+
+        Returns:
+            Merged brainstorming results
+        """
+        tasks = [
+            AgentTask(
+                agent_name=f"{agent_prefix}_{i+1}",
+                prompt=prompt,
+                system_prompt=f"You are brainstorming agent #{i+1}. Provide creative and unique solutions.",
+                priority=5
+            )
+            for i in range(num_agents)
+        ]
+
+        return self.execute_parallel(tasks, merge_strategy="collect")
+
+    def execute_multi_critic(
+        self,
+        content: str,
+        num_critics: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Get multiple critical reviews in parallel.
+
+        Args:
+            content: Content to review
+            num_critics: Number of critic agents
+
+        Returns:
+            Merged review results
+        """
+        tasks = [
+            AgentTask(
+                agent_name=f"Critic_{i+1}",
+                prompt=f"Review and critique the following:\n\n{content}",
+                system_prompt=f"You are critic #{i+1}. Provide constructive criticism and identify issues.",
+                priority=7
+            )
+            for i in range(num_critics)
+        ]
+
+        return self.execute_parallel(tasks, merge_strategy="merge")
+
+    def shutdown(self):
+        """Shutdown the executor."""
+        self.executor.shutdown(wait=True)
+        logger.info("Parallel executor shutdown complete")
+
+
+class AsyncParallelExecutor:
+    """
+    AsyncIO-based parallel executor for even better performance.
+
+    Uses async/await for non-blocking execution.
+    """
+
+    def __init__(self, orchestrator):
+        self.orchestrator = orchestrator
+
+    async def execute_parallel_async(
+        self,
+        tasks: List[AgentTask],
+        merge_strategy: str = "collect"
+    ) -> Dict[str, Any]:
+        """
+        Execute tasks in parallel using asyncio.
+
+        Args:
+            tasks: List of AgentTask objects
+            merge_strategy: How to merge results
+
+        Returns:
+            Execution results with statistics
+        """
+        start_time = time.time()
+        logger.info(f"🚀 Starting async parallel execution of {len(tasks)} tasks")
+
+        # Create coroutines for all tasks
+        coroutines = [self._execute_task_async(task) for task in tasks]
+
+        # Execute all tasks concurrently
+        results = await asyncio.gather(*coroutines, return_exceptions=True)
+
+        # Process results
+        task_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Task {tasks[i].agent_name} failed: {result}")
+                task_results.append(TaskResult(
+                    agent_name=tasks[i].agent_name,
+                    result=None,
+                    duration_ms=0,
+                    node_url="unknown",
+                    success=False,
+                    error=str(result)
+                ))
+            else:
+                task_results.append(result)
+
+        total_time = (time.time() - start_time) * 1000
+
+        # Merge and return results
+        merged_result = self._merge_results(task_results, merge_strategy)
+        successful = [r for r in task_results if r.success]
+
+        return {
+            'merged_result': merged_result,
+            'individual_results': task_results,
+            'statistics': {
+                'total_tasks': len(tasks),
+                'successful': len(successful),
+                'failed': len(task_results) - len(successful),
+                'total_duration_ms': total_time,
+                'speedup_factor': (sum(r.duration_ms for r in task_results) / total_time) if total_time > 0 else 1.0
+            }
+        }
+
+    async def _execute_task_async(self, task: AgentTask) -> TaskResult:
+        """Execute a task asynchronously."""
+        loop = asyncio.get_event_loop()
+
+        # Run blocking agent call in executor
+        def blocking_call():
+            start_time = time.time()
+            agent = self.orchestrator.get_agent(task.agent_name)
+            result = agent.call_ollama(task.prompt, task.system_prompt)
+            duration_ms = (time.time() - start_time) * 1000
+            node_url = agent.ollama_url if hasattr(agent, 'ollama_url') else "unknown"
+
+            return TaskResult(
+                agent_name=task.agent_name,
+                result=result,
+                duration_ms=duration_ms,
+                node_url=node_url,
+                success=True
+            )
+
+        return await loop.run_in_executor(None, blocking_call)
+
+    def _merge_results(self, results: List[TaskResult], strategy: str) -> Any:
+        """Merge results (same as ParallelExecutor)."""
+        successful = [r for r in results if r.success]
+
+        if not successful:
+            return None
+
+        if strategy == "collect":
+            return [r.result for r in successful]
+        elif strategy == "merge":
+            return "\n\n---\n\n".join(str(r.result) for r in successful)
+        elif strategy == "best":
+            best = min(successful, key=lambda r: r.duration_ms)
+            return best.result
+        else:
+            return [r.result for r in successful]

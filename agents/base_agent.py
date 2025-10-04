@@ -66,21 +66,30 @@ class BaseAgent(ABC):
                 url = f"{routing_decision.node.url}/api/generate"
                 routing_metadata = self._load_balancer.get_routing_metadata(routing_decision)
 
-                logger.debug(
+                routing_msg = (
                     f"🎯 SOLLOL routed {self.name} to {routing_decision.node.url} "
                     f"(score: {routing_decision.decision_score:.1f})"
                 )
+                logger.info(routing_msg)
+                # Also print to stdout for CLI visibility
+                print(f"   {routing_msg}")
             except Exception as e:
-                logger.warning(f"SOLLOL routing failed, using default URL: {e}")
+                logger.error(f"❌ SOLLOL routing failed, using default URL: {e}")
                 url = f"{self.ollama_url}/api/generate"
         else:
             url = f"{self.ollama_url}/api/generate"
+            logger.info(f"📍 {self.name} using default URL: {self.ollama_url}")
 
         try:
+            logger.info(f"📤 {self.name} sending request to {url} (timeout: {self.timeout}s)")
             response = requests.post(url, json=payload, timeout=self.timeout)
             response.raise_for_status()
             result = response.json()
             self.execution_time = time.time() - start_time
+            completion_msg = f"✅ {self.name} completed in {self.execution_time:.2f}s"
+            logger.info(completion_msg)
+            # Also print to stdout for CLI visibility
+            print(f"   {completion_msg}")
             raw_output = result.get("response", "")
 
             # Record performance for SOLLOL adaptive learning
@@ -133,6 +142,48 @@ class BaseAgent(ABC):
                     standardized.update(routing_metadata)
 
                 return standardized
+
+        except requests.exceptions.Timeout as e:
+            elapsed = time.time() - start_time
+            logger.error(f"⏱️ TIMEOUT: {self.name} request to {url} timed out after {elapsed:.2f}s (limit: {self.timeout}s)")
+
+            # Record failure for SOLLOL
+            if routing_decision and hasattr(self, '_load_balancer'):
+                self._load_balancer.record_performance(
+                    decision=routing_decision,
+                    actual_duration_ms=elapsed * 1000,
+                    success=False,
+                    error=f"Timeout after {elapsed:.2f}s"
+                )
+
+            self.execution_time = elapsed
+            return {
+                "agent": self.name,
+                "status": "error",
+                "format": "text",
+                "data": {"error": f"Request timed out after {elapsed:.2f}s"}
+            }
+
+        except requests.exceptions.ConnectionError as e:
+            elapsed = time.time() - start_time
+            logger.error(f"🔌 CONNECTION ERROR: {self.name} could not connect to {url}: {e}")
+
+            # Record failure for SOLLOL
+            if routing_decision and hasattr(self, '_load_balancer'):
+                self._load_balancer.record_performance(
+                    decision=routing_decision,
+                    actual_duration_ms=elapsed * 1000,
+                    success=False,
+                    error=f"Connection error: {str(e)}"
+                )
+
+            self.execution_time = elapsed
+            return {
+                "agent": self.name,
+                "status": "error",
+                "format": "text",
+                "data": {"error": f"Connection error: {str(e)}"}
+            }
 
         except requests.exceptions.HTTPError as e:
             # Record failure for SOLLOL

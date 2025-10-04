@@ -69,8 +69,20 @@ class ASTQualityVoting:
             Critic(self.model, timeout=self.timeout)
         ]
 
+        # Define expected JSON schema for quality evaluation
+        quality_schema = {
+            "type": "object",
+            "properties": {
+                "score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                "reasoning": {"type": "string"},
+                "issues": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["score", "reasoning", "issues"]
+        }
+
         for agent in quality_agents:
             agent.ollama_url = ollama_url
+            agent.expected_schema = quality_schema  # Enable TrustCall validation
 
         scores: List[QualityScore] = []
 
@@ -130,30 +142,48 @@ Example:
         )
 
         try:
-            result = agent.call_ollama(evaluation_prompt, system_prompt, force_json=True)
+            result = agent.call_ollama(evaluation_prompt, system_prompt, force_json=True, use_trustcall=True)
 
-            # Extract score data
-            if isinstance(result, dict) and 'data' in result:
+            # Log the raw result for debugging
+            logger.debug(f"Quality voting raw result from {agent.name}: {result}")
+
+            # Extract score data - handle multiple possible formats
+            data = None
+
+            # Format 1: Direct dict with score/reasoning/issues
+            if isinstance(result, dict) and 'score' in result:
+                data = result
+            # Format 2: Nested in 'data' key
+            elif isinstance(result, dict) and 'data' in result:
                 data = result['data']
+                # If data is a JSON string, parse it
                 if isinstance(data, str):
-                    # Try to parse JSON string
                     try:
                         data = json.loads(data)
-                    except:
-                        pass
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse JSON string from {agent.name}: {data[:100]}")
+                        data = None
 
-                if isinstance(data, dict):
-                    score_val = float(data.get('score', 0.5))
-                    reasoning = data.get('reasoning', 'No reasoning provided')
-                    issues = data.get('issues', [])
-                else:
-                    score_val = 0.5
-                    reasoning = "Unable to parse evaluation"
-                    issues = ["Parse error"]
+            # Extract values from parsed data
+            if isinstance(data, dict):
+                score_val = data.get('score', 0.5)
+                # Handle score as string
+                if isinstance(score_val, str):
+                    try:
+                        score_val = float(score_val)
+                    except ValueError:
+                        score_val = 0.5
+
+                reasoning = data.get('reasoning', 'No reasoning provided')
+                issues = data.get('issues', [])
+                if not isinstance(issues, list):
+                    issues = []
             else:
+                # Failed to extract data
+                logger.warning(f"Could not extract quality data from {agent.name} - result type: {type(result)}")
                 score_val = 0.5
-                reasoning = "Invalid response format"
-                issues = ["Format error"]
+                reasoning = "Invalid response format - could not parse quality evaluation"
+                issues = ["Response parsing failed"]
 
             return QualityScore(
                 agent_name=agent.name,

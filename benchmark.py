@@ -14,7 +14,10 @@ from node_registry import NodeRegistry
 from adaptive_strategy import ExecutionMode
 from load_balancer import RoutingStrategy
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 

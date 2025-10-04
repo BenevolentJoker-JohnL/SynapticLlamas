@@ -5,19 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SOLLOL - Intelligent Load Balancer Dashboard</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: #0a0e27;
             color: #e0e0e0;
             padding: 20px;
         }
-
         .header {
             text-align: center;
             margin-bottom: 30px;
@@ -25,26 +19,14 @@
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             border-radius: 10px;
         }
-
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            color: white;
-        }
-
-        .header p {
-            font-size: 1.1em;
-            color: #f0f0f0;
-            opacity: 0.9;
-        }
-
+        .header h1 { font-size: 2.5em; margin-bottom: 10px; color: white; }
+        .header p { font-size: 1.1em; color: #f0f0f0; opacity: 0.9; }
         .status-bar {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 15px;
             margin-bottom: 30px;
         }
-
         .status-card {
             background: #1a1f3a;
             padding: 20px;
@@ -52,56 +34,30 @@
             border-left: 4px solid #667eea;
             transition: transform 0.2s;
         }
-
-        .status-card:hover {
-            transform: translateY(-5px);
-        }
-
-        .status-card.healthy {
-            border-left-color: #4ade80;
-        }
-
-        .status-card.warning {
-            border-left-color: #fbbf24;
-        }
-
-        .status-card.error {
-            border-left-color: #f87171;
-        }
-
+        .status-card:hover { transform: translateY(-5px); }
+        .status-card.healthy { border-left-color: #4ade80; }
+        .status-card.warning { border-left-color: #fbbf24; }
+        .status-card.error { border-left-color: #f87171; }
         .status-card h3 {
             font-size: 0.9em;
             color: #9ca3af;
             margin-bottom: 8px;
             text-transform: uppercase;
         }
-
-        .status-card .value {
-            font-size: 2em;
-            font-weight: bold;
-            color: #f0f0f0;
-        }
-
-        .status-card .unit {
-            font-size: 0.8em;
-            color: #9ca3af;
-            margin-left: 5px;
-        }
-
+        .status-card .value { font-size: 2em; font-weight: bold; color: #f0f0f0; }
+        .status-card .unit { font-size: 0.8em; color: #9ca3af; margin-left: 5px; }
         .main-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 20px;
             margin-bottom: 20px;
         }
-
         .panel {
             background: #1a1f3a;
             padding: 25px;
             border-radius: 10px;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
         }
-
         .panel h2 {
             font-size: 1.4em;
             margin-bottom: 20px;
@@ -109,13 +65,7 @@
             border-bottom: 2px solid #667eea;
             padding-bottom: 10px;
         }
-
-        .host-list {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
+        .host-list { display: flex; flex-direction: column; gap: 12px; }
         .host-item {
             background: #0a0e27;
             padding: 15px;
@@ -125,97 +75,22 @@
             grid-template-columns: 1fr auto;
             align-items: center;
         }
-
-        .host-item.degraded {
-            border-left-color: #fbbf24;
-        }
-
-        .host-item.offline {
-            border-left-color: #f87171;
-            opacity: 0.6;
-        }
-
-        .host-name {
-            font-weight: bold;
-            font-size: 1.1em;
-            margin-bottom: 8px;
-        }
-
-        .host-metrics {
-            display: flex;
-            gap: 15px;
-            font-size: 0.85em;
-            color: #9ca3af;
-        }
-
-        .host-metrics span {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-
-        .host-status {
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.85em;
-            font-weight: bold;
-        }
-
-        .host-status.healthy {
-            background: #4ade80;
-            color: #0a0e27;
-        }
-
-        .host-status.degraded {
-            background: #fbbf24;
-            color: #0a0e27;
-        }
-
-        .host-status.offline {
-            background: #f87171;
-            color: white;
-        }
-
-        .alerts {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-
-        .alert {
-            padding: 12px 15px;
-            border-radius: 6px;
-            border-left: 4px solid;
-            font-size: 0.9em;
-        }
-
-        .alert.error {
-            background: rgba(248, 113, 113, 0.1);
-            border-left-color: #f87171;
-        }
-
-        .alert.warning {
-            background: rgba(251, 191, 36, 0.1);
-            border-left-color: #fbbf24;
-        }
-
-        .alert-message {
-            margin-bottom: 5px;
-        }
-
-        .alert-time {
-            font-size: 0.8em;
-            color: #9ca3af;
-        }
-
-        .routing-patterns {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 10px;
-        }
-
+        .host-item.degraded { border-left-color: #fbbf24; }
+        .host-item.offline { border-left-color: #f87171; opacity: 0.6; }
+        .host-name { font-weight: bold; font-size: 1.1em; margin-bottom: 8px; }
+        .host-metrics { display: flex; gap: 15px; font-size: 0.85em; color: #9ca3af; }
+        .host-metrics span { display: flex; align-items: center; gap: 5px; }
+        .host-status { padding: 5px 12px; border-radius: 20px; font-size: 0.85em; font-weight: bold; }
+        .host-status.healthy { background: #4ade80; color: #0a0e27; }
+        .host-status.degraded { background: #fbbf24; color: #0a0e27; }
+        .host-status.offline { background: #f87171; color: white; }
+        .alerts { display: flex; flex-direction: column; gap: 10px; max-height: 300px; overflow-y: auto; }
+        .alert { padding: 12px 15px; border-radius: 6px; border-left: 4px solid; font-size: 0.9em; }
+        .alert.error { background: rgba(248, 113, 113, 0.1); border-left-color: #f87171; }
+        .alert.warning { background: rgba(251, 191, 36, 0.1); border-left-color: #fbbf24; }
+        .alert-message { margin-bottom: 5px; }
+        .alert-time { font-size: 0.8em; color: #9ca3af; }
+        .routing-patterns { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
         .pattern-badge {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             padding: 10px;
@@ -224,8 +99,7 @@
             font-size: 0.9em;
             font-weight: bold;
         }
-
-        .refresh-indicator {
+        .connection-indicator {
             position: fixed;
             top: 20px;
             right: 20px;
@@ -237,7 +111,6 @@
             gap: 10px;
             font-size: 0.9em;
         }
-
         .spinner {
             width: 16px;
             height: 16px;
@@ -246,27 +119,57 @@
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .no-data { text-align: center; color: #9ca3af; padding: 40px; font-style: italic; }
+        .full-width { grid-column: 1 / -1; }
+        #log-panel {
+            background: #0a0e27;
+            color: #e0e0e0;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.85em;
+            height: 400px;
+            overflow-y: scroll;
+            border-radius: 6px;
+            padding: 15px;
+            border: 1px solid #1a1f3a;
         }
-
-        .no-data {
-            text-align: center;
+        .log-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .log-tab {
+            background: #1a1f3a;
+            border: none;
             color: #9ca3af;
-            padding: 40px;
-            font-style: italic;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
         }
-
-        .full-width {
-            grid-column: 1 / -1;
+        .log-tab:hover { background: #242945; }
+        .log-tab.active {
+            background: #667eea;
+            color: white;
         }
-
-        @media (max-width: 1024px) {
-            .main-grid {
-                grid-template-columns: 1fr;
-            }
+        .log-panel {
+            background: #0f1221;
+            height: 400px;
+            overflow-y: scroll;
+            border-radius: 6px;
+            padding: 15px;
+            border: 1px solid #1a1f3a;
         }
+        .log-line {
+            white-space: pre-wrap;
+            word-break: break-all;
+            padding: 5px 0;
+            border-bottom: 1px solid #1a1f3a33;
+        }
+        .log-line.info { color: #60a5fa; }
+        .log-line.error { color: #f87171; }
+        .log-line.warning { color: #fbbf24; }
+        @media (max-width: 1024px) { .main-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
@@ -275,9 +178,9 @@
         <p>Super Ollama Load Balancer - Intelligent Performance-Aware Routing</p>
     </div>
 
-    <div class="refresh-indicator">
-        <div class="spinner"></div>
-        <span id="refresh-status">Updating...</span>
+    <div class="connection-indicator">
+        <div id="spinner" class="spinner"></div>
+        <span id="connection-status">Connecting...</span>
     </div>
 
     <div class="status-bar">
@@ -310,50 +213,147 @@
     <div class="main-grid">
         <div class="panel">
             <h2>🖥️ Host Status</h2>
-            <div class="host-list" id="host-list">
-                <div class="no-data">Waiting for data...</div>
-            </div>
+            <div class="host-list" id="host-list"><div class="no-data">Waiting for data...</div></div>
         </div>
-
         <div class="panel">
             <h2>⚠️ Active Alerts</h2>
-            <div class="alerts" id="alerts-list">
-                <div class="no-data">No alerts</div>
-            </div>
+            <div class="alerts" id="alerts-list"><div class="no-data">No alerts</div></div>
         </div>
-
         <div class="panel full-width">
             <h2>🧠 Routing Intelligence</h2>
             <div style="margin-bottom: 15px;">
                 <strong>Learned Task Patterns:</strong>
-                <div class="routing-patterns" id="routing-patterns">
-                    <div class="no-data">No patterns learned yet</div>
-                </div>
+                <div class="routing-patterns" id="routing-patterns"><div class="no-data">No patterns learned yet</div></div>
             </div>
             <div style="margin-top: 20px; font-size: 0.9em; color: #9ca3af;">
                 <strong>Task Types Learned:</strong> <span id="task-count">0</span>
             </div>
         </div>
+        <div class="panel full-width">
+            <h2>📜 Live Logs</h2>
+            <div class="log-tabs">
+                <button class="log-tab active" onclick="switchLogTab('app')">Application Logs</button>
+                <button class="log-tab" onclick="switchLogTab('ollama')">Ollama Node Activity</button>
+            </div>
+            <div id="app-log-panel" class="log-panel"></div>
+            <div id="ollama-log-panel" class="log-panel" style="display:none;"></div>
+        </div>
     </div>
 
     <script>
-        const API_BASE = 'http://localhost:8080';
-        let refreshInterval;
+        const WS_BASE = `ws://${window.location.host}`;
 
-        async function fetchDashboard() {
-            try {
-                const response = await fetch(`${API_BASE}/api/dashboard`);
-                const data = await response.json();
-                updateDashboard(data);
-                document.getElementById('refresh-status').textContent = `Updated ${new Date().toLocaleTimeString()}`;
-            } catch (error) {
-                console.error('Failed to fetch dashboard data:', error);
-                document.getElementById('refresh-status').textContent = 'Connection error';
+        function connectWebSocket(url, onMessage, onOpen, onClose) {
+            const ws = new WebSocket(url);
+            ws.onmessage = onMessage;
+            ws.onopen = onOpen;
+            ws.onclose = onClose;
+            return ws;
+        }
+
+        function setupWebSockets() {
+            const statusEl = document.getElementById('connection-status');
+            const spinnerEl = document.getElementById('spinner');
+
+            // Dashboard WebSocket
+            const dashboardWsUrl = `${WS_BASE}/ws/dashboard`;
+            let dashboardWs;
+            const connectDashboard = () => {
+                dashboardWs = connectWebSocket(dashboardWsUrl, (event) => {
+                    const data = JSON.parse(event.data);
+                    updateDashboard(data);
+                }, () => {
+                    console.log('Dashboard WebSocket connected.');
+                    statusEl.textContent = 'Connected';
+                    spinnerEl.style.display = 'none';
+                }, () => {
+                    console.log('Dashboard WebSocket disconnected. Reconnecting...');
+                    statusEl.textContent = 'Reconnecting...';
+                    spinnerEl.style.display = 'block';
+                    setTimeout(connectDashboard, 2000);
+                });
+            };
+
+            // Application Log WebSocket
+            const logWsUrl = `${WS_BASE}/ws/logs`;
+            let logWs;
+            const appLogPanel = document.getElementById('app-log-panel');
+            const connectLogs = () => {
+                logWs = connectWebSocket(logWsUrl, (event) => {
+                    const logLine = document.createElement('div');
+                    logLine.className = 'log-line';
+                    logLine.textContent = event.data;
+                    appLogPanel.appendChild(logLine);
+                    appLogPanel.scrollTop = appLogPanel.scrollHeight;
+                    // Keep max 500 lines
+                    while (appLogPanel.childElementCount > 500) {
+                        appLogPanel.removeChild(appLogPanel.firstChild);
+                    }
+                }, () => {
+                    console.log('App Log WebSocket connected.');
+                    if (appLogPanel.childElementCount === 0) {
+                         appLogPanel.innerHTML = '<div class="no-data">Waiting for logs...</div>';
+                    }
+                }, () => {
+                    console.log('App Log WebSocket disconnected. Reconnecting...');
+                    setTimeout(connectLogs, 2000);
+                });
+            };
+
+            // Ollama Log WebSocket
+            const ollamaWsUrl = `${WS_BASE}/ws/ollama_logs`;
+            let ollamaWs;
+            const ollamaLogPanel = document.getElementById('ollama-log-panel');
+            const connectOllamaLogs = () => {
+                ollamaWs = connectWebSocket(ollamaWsUrl, (event) => {
+                    const data = JSON.parse(event.data);
+                    const logLine = document.createElement('div');
+                    logLine.className = `log-line ${data.level}`;
+
+                    const timestamp = new Date(data.timestamp * 1000).toLocaleTimeString();
+                    const node = data.node.replace('http://', '').replace(':11434', '');
+                    logLine.innerHTML = `<span style="color:#666">[${timestamp}]</span> <span style="color:#9ca3af">[${node}]</span> ${data.message}`;
+
+                    ollamaLogPanel.appendChild(logLine);
+                    ollamaLogPanel.scrollTop = ollamaLogPanel.scrollHeight;
+                    // Keep max 500 lines
+                    while (ollamaLogPanel.childElementCount > 500) {
+                        ollamaLogPanel.removeChild(ollamaLogPanel.firstChild);
+                    }
+                }, () => {
+                    console.log('Ollama Log WebSocket connected.');
+                    if (ollamaLogPanel.childElementCount === 0) {
+                         ollamaLogPanel.innerHTML = '<div class="no-data">Waiting for Ollama activity...</div>';
+                    }
+                }, () => {
+                    console.log('Ollama Log WebSocket disconnected. Reconnecting...');
+                    setTimeout(connectOllamaLogs, 2000);
+                });
+            };
+
+            connectDashboard();
+            connectLogs();
+            connectOllamaLogs();
+        }
+
+        function switchLogTab(tab) {
+            const tabs = document.querySelectorAll('.log-tab');
+            tabs.forEach(t => t.classList.remove('active'));
+
+            if (tab === 'app') {
+                tabs[0].classList.add('active');
+                document.getElementById('app-log-panel').style.display = 'block';
+                document.getElementById('ollama-log-panel').style.display = 'none';
+            } else {
+                tabs[1].classList.add('active');
+                document.getElementById('app-log-panel').style.display = 'none';
+                document.getElementById('ollama-log-panel').style.display = 'block';
             }
         }
 
         function updateDashboard(data) {
-            // System status
+            if (Object.keys(data).length === 0) return;
+
             const healthCard = document.getElementById('health-card');
             const statusEl = document.getElementById('system-status');
             if (data.status.healthy) {
@@ -366,68 +366,42 @@
                 statusEl.style.color = '#f87171';
             }
 
-            // Metrics
-            document.getElementById('active-hosts').innerHTML =
-                `${data.status.available_hosts}<span class="unit">/ ${data.status.total_hosts}</span>`;
-            document.getElementById('avg-latency').innerHTML =
-                `${Math.round(data.performance.avg_latency_ms)}<span class="unit">ms</span>`;
-            document.getElementById('success-rate').innerHTML =
-                `${Math.round(data.performance.avg_success_rate * 100)}<span class="unit">%</span>`;
-            document.getElementById('gpu-memory').innerHTML =
-                `${Math.round(data.performance.total_gpu_memory_mb)}<span class="unit">MB</span>`;
+            document.getElementById('active-hosts').innerHTML = `${data.status.available_hosts}<span class="unit">/ ${data.status.total_hosts}</span>`;
+            document.getElementById('avg-latency').innerHTML = `${Math.round(data.performance.avg_latency_ms)}<span class="unit">ms</span>`;
+            document.getElementById('success-rate').innerHTML = `${Math.round(data.performance.avg_success_rate * 100)}<span class="unit">%</span>`;
+            document.getElementById('gpu-memory').innerHTML = `${Math.round(data.performance.total_gpu_memory_mb)}<span class="unit">MB</span>`;
             document.getElementById('ray-workers').textContent = data.status.ray_workers;
 
-            // Hosts
             const hostList = document.getElementById('host-list');
-            if (data.hosts && data.hosts.length > 0) {
-                hostList.innerHTML = data.hosts.map(host => `
-                    <div class="host-item ${host.status}">
-                        <div>
-                            <div class="host-name">${host.host}</div>
-                            <div class="host-metrics">
-                                <span>⏱️ ${Math.round(host.latency_ms)}ms</span>
-                                <span>✓ ${Math.round(host.success_rate * 100)}%</span>
-                                <span>📊 Load: ${Math.round(host.load * 100)}%</span>
-                                <span>🎮 ${host.gpu_mb}MB</span>
-                            </div>
+            hostList.innerHTML = data.hosts.length > 0 ? data.hosts.map(host => `
+                <div class="host-item ${host.status}">
+                    <div>
+                        <div class="host-name">${host.host}</div>
+                        <div class="host-metrics">
+                            <span>⏱️ ${Math.round(host.latency_ms)}ms</span>
+                            <span>✓ ${Math.round(host.success_rate * 100)}%</span>
+                            <span>📊 Load: ${Math.round(host.load * 100)}%</span>
+                            <span>🎮 ${host.gpu_mb}MB</span>
                         </div>
-                        <div class="host-status ${host.status}">${host.status}</div>
                     </div>
-                `).join('');
-            }
+                    <div class="host-status ${host.status}">${host.status}</div>
+                </div>
+            `).join('') : '<div class="no-data">No hosts found.</div>';
 
-            // Alerts
             const alertsList = document.getElementById('alerts-list');
-            if (data.alerts && data.alerts.length > 0) {
-                alertsList.innerHTML = data.alerts.map(alert => `
-                    <div class="alert ${alert.severity}">
-                        <div class="alert-message">${alert.message}</div>
-                        <div class="alert-time">${new Date(alert.timestamp).toLocaleTimeString()}</div>
-                    </div>
-                `).join('');
-            } else {
-                alertsList.innerHTML = '<div class="no-data">No alerts</div>';
-            }
+            alertsList.innerHTML = data.alerts.length > 0 ? data.alerts.map(alert => `
+                <div class="alert ${alert.severity}">
+                    <div class="alert-message">${alert.message}</div>
+                    <div class="alert-time">${new Date(alert.timestamp).toLocaleTimeString()}</div>
+                </div>
+            `).join('') : '<div class="no-data">No alerts</div>';
 
-            // Routing patterns
             const patternsEl = document.getElementById('routing-patterns');
-            if (data.routing.patterns_available && data.routing.patterns_available.length > 0) {
-                patternsEl.innerHTML = data.routing.patterns_available.map(pattern =>
-                    `<div class="pattern-badge">${pattern}</div>`
-                ).join('');
-            }
-
+            patternsEl.innerHTML = data.routing.patterns_available.length > 0 ? data.routing.patterns_available.map(p => `<div class="pattern-badge">${p}</div>`).join('') : '<div class="no-data">No patterns learned yet</div>';
             document.getElementById('task-count').textContent = data.routing.task_types_learned;
         }
 
-        // Start auto-refresh
-        fetchDashboard();
-        refreshInterval = setInterval(fetchDashboard, 3000);
-
-        // Cleanup on page unload
-        window.addEventListener('beforeunload', () => {
-            clearInterval(refreshInterval);
-        });
+        document.addEventListener('DOMContentLoaded', setupWebSockets);
     </script>
 </body>
 </html>

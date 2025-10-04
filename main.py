@@ -17,6 +17,16 @@ from rich.panel import Panel
 import json
 import argparse
 import sys
+import os
+import logging
+
+# Configure logging to match SOLLOL format
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+logger = logging.getLogger(__name__)
 
 
 # Global registry for distributed mode
@@ -24,23 +34,89 @@ global_registry = NodeRegistry()
 global_orchestrator = None
 global_dask_executor = None
 
+# Configuration file paths
+CONFIG_PATH = os.path.expanduser("~/.synapticllamas.json")
+NODES_CONFIG_PATH = os.path.expanduser("~/.synapticllamas_nodes.json")
+
+def load_config():
+    """Load persistent configuration from ~/.synapticllamas.json"""
+    default_config = {
+        "mode": None,  # None = use CLI args, or "standard"/"distributed"/"dask"
+        "collaborative_mode": False,
+        "refinement_rounds": 1,
+        "agent_timeout": 300,
+        "ast_voting_enabled": False,
+        "quality_threshold": 0.7,
+        "max_quality_retries": 2,
+        "flockparser_enabled": False,
+        "model": "llama3.2",
+        "strategy": None  # None = auto, or ExecutionMode value string
+    }
+
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                saved_config = json.load(f)
+                default_config.update(saved_config)
+                print(f"📁 Loaded settings from {CONFIG_PATH}")
+        except Exception as e:
+            logger.warning(f"Failed to load config: {e}")
+
+    return default_config
+
+def save_config(config):
+    """Auto-save configuration to ~/.synapticllamas.json"""
+    try:
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(config, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save config: {e}")
+
 
 def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=False, dask_scheduler=None):
     """Interactive CLI mode for continuous queries."""
     global global_orchestrator, global_registry, global_dask_executor
 
+    # Load persistent configuration
+    config = load_config()
+
     # Mutable state for mode switching
-    current_mode = "dask" if use_dask else ("distributed" if distributed else "standard")
-    current_strategy = None  # Let adaptive selector choose
-    current_model = model
-    collaborative_mode = False  # Collaborative workflow toggle
-    refinement_rounds = 1  # Number of refinement iterations
-    agent_timeout = 300  # Default 5 minutes for CPU inference
+    # Use saved mode if available, otherwise use CLI args
+    saved_mode = config.get("mode", None)
+    if saved_mode:
+        current_mode = saved_mode
+    else:
+        current_mode = "dask" if use_dask else ("distributed" if distributed else "standard")
+
+    # Load strategy from config and convert back to ExecutionMode
+    strategy_str = config.get("strategy", None)
+    if strategy_str is None:
+        current_strategy = None  # Auto
+    else:
+        # Convert string back to ExecutionMode enum
+        try:
+            current_strategy = ExecutionMode(strategy_str)
+        except ValueError:
+            current_strategy = None
+
+    current_model = config.get("model", model)
+    collaborative_mode = config.get("collaborative_mode", False)
+    refinement_rounds = config.get("refinement_rounds", 1)
+    agent_timeout = config.get("agent_timeout", 300)
 
     # AST Quality Voting settings
-    ast_voting_enabled = False
-    quality_threshold = 0.7  # 0.0 to 1.0
-    max_quality_retries = 2
+    ast_voting_enabled = config.get("ast_voting_enabled", False)
+    quality_threshold = config.get("quality_threshold", 0.7)
+    max_quality_retries = config.get("max_quality_retries", 2)
+
+    # FlockParser RAG settings
+    flockparser_enabled = config.get("flockparser_enabled", False)
+
+    # Helper to auto-save settings
+    def update_config(**kwargs):
+        nonlocal config
+        config.update(kwargs)
+        save_config(config)
 
     def print_welcome():
         console.clear()
@@ -83,6 +159,10 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
         print_command(f"quality <0.0-1.0> [{quality_threshold}]", "Set quality threshold")
         print_command(f"qretries <n> [{max_quality_retries}]", "Set max quality retries")
 
+        console.print("\n[bold red]📚 FLOCKPARSER RAG[/bold red]")
+        rag_status = "[green]ON[/green]" if flockparser_enabled else "[dim]OFF[/dim]"
+        print_command(f"rag on/off [{rag_status}]", "Toggle PDF RAG enhancement")
+
         console.print("\n[bold red]🔧 NODE COMMANDS[/bold red]")
         print_command("nodes", "List Ollama nodes")
         print_command("add <url>", "Add Ollama node")
@@ -105,6 +185,16 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
     print_welcome()
 
+    # Auto-load previously discovered nodes
+    if os.path.exists(NODES_CONFIG_PATH):
+        try:
+            global_registry.load_config(NODES_CONFIG_PATH)
+            node_count = len(global_registry.nodes)
+            if node_count > 0:
+                print_success(f"Auto-loaded {node_count} node(s) from previous session")
+        except Exception as e:
+            logger.warning(f"Failed to auto-load nodes: {e}")
+
     # Initialize based on mode
     def ensure_orchestrator():
         global global_orchestrator, global_dask_executor
@@ -114,12 +204,21 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
             return global_dask_executor, None
         elif current_mode == "distributed":
             if global_orchestrator is None:
-                global_orchestrator = DistributedOrchestrator(global_registry)
+                global_orchestrator = DistributedOrchestrator(
+                    global_registry,
+                    use_flockparser=flockparser_enabled
+                )
             return None, global_orchestrator
         else:
             return None, None
 
-    executor, orchestrator = ensure_orchestrator()
+    # Don't initialize orchestrator at startup if in distributed mode
+    # This allows users to add nodes first via discover/add commands
+    # Orchestrator will be created lazily when first needed
+    if current_mode != "distributed":
+        executor, orchestrator = ensure_orchestrator()
+    else:
+        executor, orchestrator = None, None
 
     last_result = None
 
@@ -150,13 +249,16 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     new_mode = parts[1].lower()
                     if new_mode == 'standard':
                         current_mode = 'standard'
+                        update_config(mode='standard')
                         print("✅ Switched to Standard Mode\n")
                     elif new_mode == 'distributed':
                         current_mode = 'distributed'
+                        update_config(mode='distributed')
                         executor, orchestrator = ensure_orchestrator()
                         print("✅ Switched to Distributed Mode\n")
                     elif new_mode == 'dask':
                         current_mode = 'dask'
+                        update_config(mode='dask')
                         executor, orchestrator = ensure_orchestrator()
                         print(f"✅ Switched to Dask Mode\n")
                         if executor:
@@ -172,10 +274,12 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     toggle = parts[1].lower()
                     if toggle == 'on':
                         collaborative_mode = True
+                        update_config(collaborative_mode=True)
                         print("✅ Collaborative mode ENABLED")
                         print("   Agents will work sequentially with feedback loops\n")
                     elif toggle == 'off':
                         collaborative_mode = False
+                        update_config(collaborative_mode=False)
                         print("✅ Collaborative mode DISABLED")
                         print("   Agents will work in parallel independently\n")
                     else:
@@ -192,6 +296,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             print("❌ Refinement rounds must be between 0 and 5\n")
                         else:
                             refinement_rounds = rounds
+                            update_config(refinement_rounds=rounds)
                             print(f"✅ Refinement rounds set to {rounds}\n")
                     except ValueError:
                         print("❌ Please provide a number\n")
@@ -207,6 +312,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             print("❌ Timeout must be at least 30 seconds\n")
                         else:
                             agent_timeout = timeout_val
+                            update_config(agent_timeout=timeout_val)
                             print(f"✅ Inference timeout set to {timeout_val}s\n")
                     except ValueError:
                         print("❌ Please provide a number\n")
@@ -219,10 +325,12 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     toggle = parts[1].lower()
                     if toggle == 'on':
                         ast_voting_enabled = True
+                        update_config(ast_voting_enabled=True)
                         print("✅ AST Quality Voting ENABLED")
                         print("   Output will be evaluated by voting agents\n")
                     elif toggle == 'off':
                         ast_voting_enabled = False
+                        update_config(ast_voting_enabled=False)
                         print("✅ AST Quality Voting DISABLED\n")
                     else:
                         print("❌ Use 'ast on' or 'ast off'\n")
@@ -238,6 +346,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             print("❌ Quality threshold must be between 0.0 and 1.0\n")
                         else:
                             quality_threshold = threshold
+                            update_config(quality_threshold=threshold)
                             print(f"✅ Quality threshold set to {threshold:.2f}\n")
                     except ValueError:
                         print("❌ Please provide a number between 0.0 and 1.0\n")
@@ -253,9 +362,32 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             print("❌ Quality retries must be between 0 and 5\n")
                         else:
                             max_quality_retries = retries
+                            update_config(max_quality_retries=retries)
                             print(f"✅ Max quality retries set to {retries}\n")
                     except ValueError:
                         print("❌ Please provide a number\n")
+
+            # RAG toggle
+            elif command == 'rag':
+                if len(parts) < 2:
+                    print(f"❌ Usage: rag [on|off]\n")
+                else:
+                    toggle = parts[1].lower()
+                    if toggle == 'on':
+                        flockparser_enabled = True
+                        update_config(flockparser_enabled=True)
+                        # Force re-initialization of orchestrator with new setting
+                        global_orchestrator = None
+                        print("✅ FlockParser RAG ENABLED")
+                        print("   Research queries will be enhanced with PDF context\n")
+                    elif toggle == 'off':
+                        flockparser_enabled = False
+                        update_config(flockparser_enabled=False)
+                        # Force re-initialization of orchestrator
+                        global_orchestrator = None
+                        print("✅ FlockParser RAG DISABLED\n")
+                    else:
+                        print("❌ Use 'rag on' or 'rag off'\n")
 
             # Strategy selection
             elif command == 'strategy':
@@ -265,18 +397,23 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     strat = parts[1].lower()
                     if strat == 'auto':
                         current_strategy = None
+                        update_config(strategy=None)
                         print("✅ Strategy: Auto (adaptive)\n")
                     elif strat == 'single':
                         current_strategy = ExecutionMode.SINGLE_NODE
+                        update_config(strategy=current_strategy.value)
                         print("✅ Strategy: Single Node (sequential)\n")
                     elif strat == 'parallel':
                         current_strategy = ExecutionMode.PARALLEL_SAME_NODE
+                        update_config(strategy=current_strategy.value)
                         print("✅ Strategy: Parallel Same Node\n")
                     elif strat == 'multi':
                         current_strategy = ExecutionMode.PARALLEL_MULTI_NODE
+                        update_config(strategy=current_strategy.value)
                         print("✅ Strategy: Parallel Multi-Node\n")
                     elif strat == 'gpu':
                         current_strategy = ExecutionMode.GPU_ROUTING
+                        update_config(strategy=current_strategy.value)
                         print("✅ Strategy: GPU Routing\n")
                     else:
                         print("❌ Unknown strategy\n")
@@ -317,22 +454,32 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
             # Dashboard command
             elif command == 'dashboard':
+                # Ensure the orchestrator is live before launching the dashboard
+                if current_mode == 'distributed' and orchestrator is None:
+                    _, orchestrator = ensure_orchestrator()
+                    print_info("Orchestrator initialized for dashboard monitoring.")
+
                 print("🚀 Launching SOLLOL Dashboard on http://localhost:8080")
                 print("   Running in background thread...\n")
                 import threading
                 import sys
-                import os
 
-                # Suppress Flask/Waitress logs
-                import logging as log
-                log.getLogger('werkzeug').setLevel(log.ERROR)
-                log.getLogger('waitress').setLevel(log.ERROR)
+                # Get the current registry and load balancer
+                current_registry = global_registry
+                current_lb = None
+                if orchestrator and hasattr(orchestrator, 'load_balancer'):
+                    current_lb = orchestrator.load_balancer
 
                 def run_dashboard_thread():
                     # Import here to avoid circular imports
                     sys.path.insert(0, os.getcwd())
                     from dashboard_server import run_dashboard
-                    run_dashboard(host='0.0.0.0', port=8080, production=True)
+                    run_dashboard(
+                        host='0.0.0.0',
+                        port=8080,
+                        node_registry=current_registry,
+                        sollol_lb=current_lb
+                    )
 
                 dashboard_thread = threading.Thread(target=run_dashboard_thread, daemon=True, name="DashboardServer")
                 dashboard_thread.start()
@@ -340,7 +487,16 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                 import time
                 time.sleep(1)  # Give server time to start
 
+                # Connect main app logging to dashboard log queue
+                from dashboard_server import log_queue, QueueLogHandler
+                root_logger = logging.getLogger()
+                queue_handler = QueueLogHandler(log_queue)
+                queue_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+                root_logger.addHandler(queue_handler)
+                logging.info("📊 Dashboard logging connected - all app logs will stream to dashboard")
+
                 print("✅ Dashboard started in background!")
+                print(f"   Tracking {len(current_registry)} nodes from your session")
                 print("   Open http://localhost:8080 in your browser")
                 print("   Dashboard will auto-shutdown when you exit SynapticLlamas\n")
 
@@ -381,6 +537,14 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                 nodes_list = list(global_registry.nodes.values())
                 if nodes_list:
                     print_node_table([n.to_dict() for n in nodes_list])
+                    # Also show current metrics for debugging
+                    print("\n📊 Current Metrics:")
+                    for node in nodes_list:
+                        print(f"  {node.url}:")
+                        print(f"    Total requests: {node.metrics.total_requests}")
+                        print(f"    Avg latency: {node.metrics.avg_latency:.0f}ms")
+                        print(f"    Load score: {node.calculate_load_score():.1f}")
+                    print()
                 else:
                     print_warning("No nodes registered")
 
@@ -392,6 +556,13 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     try:
                         node = global_registry.add_node(url)
                         print(f"✅ Added node: {node.name}\n")
+
+                        # Auto-save after adding node
+                        try:
+                            global_registry.save_config(NODES_CONFIG_PATH)
+                            logger.info(f"Auto-saved {len(global_registry.nodes)} nodes to {NODES_CONFIG_PATH}")
+                        except Exception as e:
+                            logger.warning(f"Failed to auto-save nodes: {e}")
                     except Exception as e:
                         print(f"❌ Failed to add node: {e}\n")
 
@@ -402,6 +573,13 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     url = parts[1]
                     if global_registry.remove_node(url):
                         print(f"✅ Removed node: {url}\n")
+
+                        # Auto-save after removing node
+                        try:
+                            global_registry.save_config(NODES_CONFIG_PATH)
+                            logger.info(f"Auto-saved {len(global_registry.nodes)} nodes to {NODES_CONFIG_PATH}")
+                        except Exception as e:
+                            logger.warning(f"Failed to auto-save nodes: {e}")
                     else:
                         print(f"❌ Node not found: {url}\n")
 
@@ -431,6 +609,14 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                                 discovered = global_registry.discover_nodes(r)
                                 total_discovered.extend(discovered)
                             print(f"✅ Discovered {len(total_discovered)} nodes total\n")
+
+                            # Auto-save discovered nodes
+                            if len(total_discovered) > 0:
+                                try:
+                                    global_registry.save_config(NODES_CONFIG_PATH)
+                                    logger.info(f"Auto-saved {len(global_registry.nodes)} nodes to {NODES_CONFIG_PATH}")
+                                except Exception as e:
+                                    logger.warning(f"Failed to auto-save nodes: {e}")
                             continue
                     else:
                         print("❌ Could not auto-detect network. Please specify CIDR manually.")
@@ -439,6 +625,14 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
                 discovered = global_registry.discover_nodes(cidr)
                 print(f"✅ Discovered {len(discovered)} nodes\n")
+
+                # Auto-save discovered nodes
+                if len(discovered) > 0:
+                    try:
+                        global_registry.save_config(NODES_CONFIG_PATH)
+                        logger.info(f"Auto-saved {len(global_registry.nodes)} nodes to {NODES_CONFIG_PATH}")
+                    except Exception as e:
+                        logger.warning(f"Failed to auto-save nodes: {e}")
 
             elif command == 'health':
                 print("🏥 Running health checks...\n")
@@ -462,7 +656,21 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
             # Process query
             else:
-                if collaborative_mode:
+                # Auto-detect if this needs long-form generation
+                from content_detector import detect_content_type, ContentType
+                content_type, estimated_chunks, metadata = detect_content_type(user_input)
+                use_longform = metadata.get('requires_multi_turn', False)
+
+                # Storytelling always uses longform, not collaborative
+                # Override collaborative mode for storytelling
+                use_collaborative = collaborative_mode
+                if content_type == ContentType.STORYTELLING:
+                    use_longform = True
+                    use_collaborative = False  # Disable collaborative for stories
+
+                if use_longform:
+                    print(f"\n📚 Detected long-form {content_type.value} (est. {estimated_chunks} parts)...\n")
+                elif use_collaborative:
                     print(f"\n🤝 Processing with collaborative workflow...\n")
                 else:
                     print(f"\n⚡ Processing...\n")
@@ -474,20 +682,30 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                 elif current_mode == 'distributed':
                     if not orchestrator:
                         _, orchestrator = ensure_orchestrator()
-                    result = orchestrator.run(
-                        user_input,
-                        model=current_model,
-                        execution_mode=current_strategy,
-                        collaborative=collaborative_mode,
-                        refinement_rounds=refinement_rounds,
-                        timeout=agent_timeout,
-                        enable_ast_voting=ast_voting_enabled,
-                        quality_threshold=quality_threshold,
-                        max_quality_retries=max_quality_retries
-                    )
+
+                    # Use long-form generation if detected
+                    if use_longform:
+                        result = orchestrator.run_longform(
+                            user_input,
+                            model=current_model,
+                            auto_detect=True,
+                            max_chunks=5
+                        )
+                    else:
+                        result = orchestrator.run(
+                            user_input,
+                            model=current_model,
+                            execution_mode=current_strategy,
+                            collaborative=use_collaborative,
+                            refinement_rounds=refinement_rounds,
+                            timeout=agent_timeout,
+                            enable_ast_voting=ast_voting_enabled,
+                            quality_threshold=quality_threshold,
+                            max_quality_retries=max_quality_retries
+                        )
                 else:
                     # Standard mode doesn't support collaborative yet
-                    if collaborative_mode:
+                    if use_collaborative:
                         print("⚠️  Collaborative mode requires distributed mode")
                         print("   Switching to distributed mode...\n")
                         current_mode = 'distributed'
@@ -496,7 +714,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             user_input,
                             model=current_model,
                             execution_mode=current_strategy,
-                            collaborative=collaborative_mode,
+                            collaborative=use_collaborative,
                             refinement_rounds=refinement_rounds,
                             timeout=agent_timeout,
                             enable_ast_voting=ast_voting_enabled,
@@ -562,6 +780,14 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         else:
                             console.print(f"  [red]{agent_name}[/red] → [dim]{node_url}[/dim]")
 
+                # Show RAG sources if available
+                if 'metadata' in result and result['metadata'].get('rag_enabled'):
+                    rag_sources = result['metadata'].get('rag_sources', [])
+                    if rag_sources:
+                        console.print("\n[cyan]📚 RAG Sources:[/cyan]")
+                        for source in rag_sources:
+                            console.print(f"  [dim]•[/dim] [green]{source}[/green]")
+
                 if 'strategy_used' in result:
                     mode_val = result['strategy_used'].get('mode')
                     if hasattr(mode_val, 'value'):
@@ -624,6 +850,13 @@ def main():
     parser.add_argument('--load-config', type=str, help='Load node configuration from file')
 
     args = parser.parse_args()
+
+    # Force reload of modules to ensure latest definitions are used
+    import importlib
+    import ollama_node
+    import node_registry
+    importlib.reload(ollama_node)
+    importlib.reload(node_registry)
 
     # Pre-setup for distributed/dask mode
     if args.distributed or args.dask:

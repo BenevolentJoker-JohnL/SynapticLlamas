@@ -43,6 +43,22 @@ if sys.platform != 'win32':
 from sollol.sollol import SOLLOL
 from sollol.config import SOLLOLConfig
 from sollol.client import SOLLOLClient, connect
+# Distributed execution (new in v0.2.0)
+from sollol.tasks import DistributedTask, TaskResult, ExecutionResult
+from sollol.execution import DistributedExecutor, AsyncDistributedExecutor
+from sollol.aggregation import ResultAggregator
 
-__version__ = "0.1.0"
-__all__ = ["SOLLOL", "SOLLOLConfig", "SOLLOLClient", "connect"]
+__version__ = "0.2.0"
+__all__ = [
+    "SOLLOL",
+    "SOLLOLConfig",
+    "SOLLOLClient",
+    "connect",
+    # Distributed Execution
+    "DistributedTask",
+    "TaskResult",
+    "ExecutionResult",
+    "DistributedExecutor",
+    "AsyncDistributedExecutor",
+    "ResultAggregator"
+]

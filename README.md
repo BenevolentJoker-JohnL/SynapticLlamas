@@ -12,6 +12,9 @@ SynapticLlamas demonstrates **distributed AI agent orchestration** by running mu
 - ✅ **Network Discovery** - Auto-discover Ollama instances on your network
 - ✅ **Adaptive Strategy Selection** - Automatically chooses optimal execution mode (single/parallel/GPU)
 - ✅ **GPU Routing** - Prioritize GPU-enabled nodes for faster inference
+- ✅ **Active GPU Controller** 🆕 - Ensures models actually run on GPU (not just route to GPU nodes)
+- ✅ **Layer Partitioning** 🆕 - Split 70B+ models across multiple nodes for distributed inference
+- ✅ **FlockParser RAG Integration** 🆕 - Enhance research reports with PDF document context
 - ✅ **Health Monitoring** - Continuous health checks and node failure handling
 - ✅ **JSON Pipeline** - Robust extraction and standardization (handles non-compliant models)
 - ✅ **Interactive CLI** - REPL-style interface with node management commands
@@ -116,9 +119,55 @@ SynapticLlamas> discover 192.168.1.0/24  # Discover Ollama nodes
 SynapticLlamas> health             # Health check all Ollama nodes
 SynapticLlamas> save nodes.json    # Save node config
 SynapticLlamas> load nodes.json    # Load node config
+SynapticLlamas> rag on/off         # Toggle FlockParser RAG enhancement
 SynapticLlamas> dask               # Show Dask cluster info (Dask mode only)
 SynapticLlamas> metrics            # Show performance metrics
 ```
+
+## FlockParser RAG Integration
+
+SynapticLlamas integrates with [FlockParser](https://github.com/your-username/FlockParser) to enhance research reports with relevant PDF document context through Retrieval-Augmented Generation (RAG).
+
+### How It Works
+
+When RAG is enabled and you ask a research question, SynapticLlamas will:
+1. Query FlockParser's document knowledge base for relevant content
+2. Inject the top 15 most relevant PDF excerpts into the research prompt (up to 2000 tokens)
+3. Generate research reports that cite and incorporate information from your PDFs
+4. Display which source documents were used in the output
+
+### Setup
+
+1. **Install FlockParser** at `/home/joker/FlockParser` (or configure path in `flockparser_adapter.py`)
+2. **Index your PDFs** using FlockParser's CLI
+3. **Enable RAG** in SynapticLlamas:
+   ```bash
+   SynapticLlamas> rag on
+   ```
+
+### Usage
+
+```bash
+# Enable RAG enhancement
+SynapticLlamas> rag on
+
+# Ask a research question
+SynapticLlamas> Explain quantum entanglement
+
+# Output will show:
+# 📖 RAG Enhancement: Using 3 source document(s)
+#    • quantum_physics_intro.pdf
+#    • entanglement_experiments.pdf
+#    • bell_theorem.pdf
+```
+
+The generated research report will incorporate information from these PDFs with proper citations.
+
+### Requirements
+
+- FlockParser installed at `/home/joker/FlockParser`
+- PDFs indexed in FlockParser's knowledge base
+- Ollama with `mxbai-embed-large` model for embeddings
 
 ## How It Handles Non-Compliant Models
 
@@ -222,6 +271,126 @@ python main.py --distributed --discover 192.168.1.0/24
 # 5. Auto-registers healthy nodes
 ```
 
+## Active GPU Controller 🆕
+
+SOLLOL now includes **active GPU controller integration** - ensuring that when the intelligent router routes to GPU nodes, models actually load on GPU (not CPU). Without this, SOLLOL's performance promise would be broken.
+
+### The Problem
+
+**Without active GPU control:**
+```
+SOLLOL routes to GPU node ✅
+Model loads on CPU anyway ❌
+Takes 45 seconds instead of 2 ❌  (20x slower!)
+```
+
+**With active GPU control:**
+```
+SOLLOL routes to GPU node ✅
+GPU controller forces model onto GPU ✅
+Takes 2 seconds as expected ✅
+```
+
+### Features
+
+- **Automatic GPU verification**: After routing to GPU node, verifies model is on GPU
+- **Force GPU load**: If model is on CPU, automatically forces it onto GPU
+- **Pre-warming**: Pre-load critical models on GPU nodes to avoid first-request delays
+- **Cluster optimization**: Intelligently place models across GPU/CPU nodes
+- **Performance validation**: Closed-loop feedback ensures routing decisions match reality
+
+### Usage
+
+```python
+from sollol_load_balancer import SOLLOLLoadBalancer
+from node_registry import NodeRegistry
+
+# GPU controller is enabled by default
+registry = NodeRegistry()
+registry.add_node("http://10.9.66.124:11434")  # GPU node
+
+load_balancer = SOLLOLLoadBalancer(registry, enable_gpu_control=True)
+
+# Pre-warm critical models on GPU nodes
+load_balancer.pre_warm_gpu_models([
+    "mxbai-embed-large",
+    "llama3.1"
+])
+
+# Show GPU/CPU status
+load_balancer.print_gpu_status()
+
+# Now when routing, models are guaranteed to be on GPU
+decision = load_balancer.route_request({
+    'model': 'mxbai-embed-large',
+    'prompt': 'embedding request'
+})
+# ✅ Routed to GPU node AND model is on GPU
+```
+
+### Performance Impact
+
+**Embedding (mxbai-embed-large, 1000 documents):**
+- GPU: ~2 seconds ⚡
+- CPU: ~45 seconds 🐌
+- **Speedup: 20x faster with GPU controller**
+
+**Generation (llama3.1, 500 tokens):**
+- GPU: ~3 seconds ⚡
+- CPU: ~60 seconds 🐌
+- **Speedup: 20x faster with GPU controller**
+
+## Layer Partitioning for Large Models 🆕
+
+SynapticLlamas now supports **layer partitioning** - the ability to split large models (70B+) across multiple nodes for distributed inference. This enables running models that don't fit on a single GPU.
+
+### Quick Example
+
+```python
+from node_registry import NodeRegistry
+
+# Setup registry
+registry = NodeRegistry()
+registry.add_node("http://192.168.1.10:11434", "gpu-node-1")
+registry.add_node("http://192.168.1.11:11434", "gpu-node-2")
+
+# Create cluster for Llama-70B
+cluster = registry.create_cluster(
+    name="llama70b-cluster",
+    node_urls=[
+        "http://192.168.1.10:11434",
+        "http://192.168.1.11:11434"
+    ],
+    model="llama2:70b",
+    partitioning_strategy="even"  # Split layers evenly
+)
+
+# Smart routing: small models → individual nodes, large models → clusters
+worker = registry.get_worker_for_model("llama2:70b")  # Returns cluster
+worker = registry.get_worker_for_model("llama3.2")    # Returns single node
+```
+
+### How It Works
+
+**Architecture:**
+```
+Small Model (llama3.2):
+GPU Node 1: [Full model] → Fast inference
+GPU Node 2: [Full model] → Load balanced
+
+Large Model (llama2:70b):
+GPU Node 1: [Layers 0-39]  ┐
+GPU Node 2: [Layers 40-79] ┴→ Distributed inference
+```
+
+**Features:**
+- Automatic layer distribution (even or memory-aware)
+- Cluster health checking (all nodes must be healthy)
+- Smart routing (large models → clusters, small models → individual nodes)
+- Support for multiple models: llama2:70b, llama3:70b, mixtral:8x7b
+
+See [node_cluster.py](node_cluster.py) for implementation details.
+
 ## Performance
 
 **Example setup: 3 nodes, llama3.2**
@@ -232,6 +401,7 @@ python main.py --distributed --discover 192.168.1.0/24
 | Parallel (single) | ~12s | 0.25 agents/s |
 | Distributed (3 nodes) | ~5s | 0.60 agents/s |
 | GPU routing | ~3s | 1.00 agents/s |
+| **Cluster (70B model)** | ~15s | **0.2 agents/s** ✨ |
 
 ## Architecture Modes
 

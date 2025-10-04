@@ -18,6 +18,12 @@ class NodeCapabilities:
     total_memory_mb: int = 0
     models_loaded: list = field(default_factory=list)
 
+    # SOLLOL compatibility property
+    @property
+    def cpu_count(self) -> int:
+        """Alias for cpu_cores (SOLLOL compatibility)."""
+        return self.cpu_cores
+
 
 @dataclass
 class NodeMetrics:
@@ -29,6 +35,22 @@ class NodeMetrics:
     last_health_check: Optional[datetime] = None
     is_healthy: bool = True
     load_score: float = 0.0  # 0-1, lower is better
+
+    # SOLLOL compatibility properties
+    @property
+    def successful_requests(self) -> int:
+        """SOLLOL compatibility: successful_requests instead of calculated value."""
+        return self.total_requests - self.failed_requests
+
+    @property
+    def avg_latency(self) -> float:
+        """SOLLOL compatibility: avg_latency (ms) instead of avg_response_time (s)."""
+        return self.avg_response_time * 1000
+
+    @property
+    def last_error(self) -> Optional[str]:
+        """SOLLOL compatibility: last_error tracking."""
+        return None  # TODO: Add error tracking if needed
 
 
 class OllamaNode:
@@ -115,7 +137,7 @@ class OllamaNode:
             return False
 
     def generate(self, model: str, prompt: str, system_prompt: Optional[str] = None,
-                 format_json: bool = False, timeout: float = 120.0) -> Dict:
+                 format_json: bool = False, timeout: float = 30.0) -> Dict:
         """
         Generate a response from this node.
 
@@ -137,10 +159,13 @@ class OllamaNode:
             payload["format"] = "json"
 
         try:
+            # Use explicit connect and read timeouts
+            connect_timeout = timeout / 2.0
+            read_timeout = timeout / 2.0
             response = requests.post(
                 f"{self.url}/api/generate",
                 json=payload,
-                timeout=timeout
+                timeout=(connect_timeout, read_timeout)
             )
             response.raise_for_status()
             elapsed = time.time() - start
@@ -158,12 +183,47 @@ class OllamaNode:
                 "success": True
             }
 
+        except requests.exceptions.Timeout as e:
+            elapsed = time.time() - start
+            self.metrics.failed_requests += 1
+            self.metrics.total_requests += 1
+            logger.error(f"Generation timed out on {self.name} after {elapsed:.2f}s: {e}")
+            return {
+                "response": "",
+                "node": self.name,
+                "elapsed": elapsed,
+                "success": False,
+                "error": f"Timeout after {elapsed:.2f}s: {str(e)}"
+            }
+        except requests.exceptions.ConnectionError as e:
+            elapsed = time.time() - start
+            self.metrics.failed_requests += 1
+            self.metrics.total_requests += 1
+            logger.error(f"Connection error on {self.name} after {elapsed:.2f}s: {e}")
+            return {
+                "response": "",
+                "node": self.name,
+                "elapsed": elapsed,
+                "success": False,
+                "error": f"Connection error after {elapsed:.2f}s: {str(e)}"
+            }
+        except requests.exceptions.HTTPError as e:
+            elapsed = time.time() - start
+            self.metrics.failed_requests += 1
+            self.metrics.total_requests += 1
+            logger.error(f"HTTP error on {self.name}: {e}")
+            return {
+                "response": "",
+                "node": self.name,
+                "elapsed": elapsed,
+                "success": False,
+                "error": f"HTTP error: {str(e)}"
+            }
         except Exception as e:
             elapsed = time.time() - start
             self.metrics.failed_requests += 1
             self.metrics.total_requests += 1
-
-            logger.error(f"Generation failed on {self.name}: {e}")
+            logger.error(f"Unexpected error on {self.name}: {e}")
             return {
                 "response": "",
                 "node": self.name,
@@ -175,51 +235,54 @@ class OllamaNode:
     def _update_avg_response_time(self, elapsed: float):
         """Update rolling average response time."""
         self._last_request_times.append(elapsed)
-        # Keep only last 10 requests
-        if len(self._last_request_times) > 10:
+        # Keep only last 100 requests
+        if len(self._last_request_times) > 100:
             self._last_request_times.pop(0)
 
         self.metrics.avg_response_time = sum(self._last_request_times) / len(self._last_request_times)
 
     def calculate_load_score(self) -> float:
         """
-        Calculate load score (0-1, lower is better).
-        Factors: response time, failure rate, current load.
+        Calculate current load score (0-100).
+
+        SOLLOL compatibility method. Higher score = higher load.
 
         Returns:
-            Load score between 0 and 1
+            Load score from 0-100
         """
-        if not self.metrics.is_healthy:
-            return 1.0  # Maximum load = unhealthy
+        if self.metrics.total_requests == 0:
+            return 0.0
 
-        # Failure rate component (0-0.5)
-        failure_rate = 0.0
-        if self.metrics.total_requests > 0:
-            failure_rate = self.metrics.failed_requests / self.metrics.total_requests * 0.5
+        # Simple load calculation based on request count and response time
+        # This is compatible with SOLLOL's expectations
+        request_load = min(100.0, (self.metrics.total_requests / 100.0) * 100)
+        latency_factor = min(1.0, self.metrics.avg_response_time / 10.0)  # Normalize to 10s
 
-        # Response time component (0-0.5)
-        # Normalize: assume 10s is max acceptable
-        response_component = min(self.metrics.avg_response_time / 10.0, 1.0) * 0.5
+        return request_load * 0.7 + latency_factor * 30.0
 
-        self.metrics.load_score = failure_rate + response_component
-        return self.metrics.load_score
+    @property
+    def is_healthy(self) -> bool:
+        """Compatibility property for SOLLOL."""
+        return self.metrics.is_healthy
 
-    def to_dict(self) -> Dict:
-        """Convert node to dictionary representation."""
+    @property
+    def last_health_check(self) -> Optional[datetime]:
+        """Compatibility property for SOLLOL."""
+        return self.metrics.last_health_check
+
+    def to_dict(self) -> dict:
+        """Convert node to dictionary for display."""
         return {
-            "name": self.name,
-            "url": self.url,
-            "priority": self.priority,
-            "is_healthy": self.metrics.is_healthy,
-            "has_gpu": self.capabilities.has_gpu,
-            "models_loaded": self.capabilities.models_loaded,
-            "total_requests": self.metrics.total_requests,
-            "failed_requests": self.metrics.failed_requests,
-            "avg_response_time": round(self.metrics.avg_response_time, 3),
-            "load_score": round(self.metrics.load_score, 3)
+            'name': self.name,
+            'url': self.url,
+            'priority': self.priority,
+            'healthy': self.metrics.is_healthy,
+            'total_requests': self.metrics.total_requests,
+            'success_rate': f"{(self.metrics.successful_requests / self.metrics.total_requests * 100) if self.metrics.total_requests > 0 else 100:.1f}%",
+            'avg_latency_ms': f"{self.metrics.avg_latency:.0f}",
+            'load_score': f"{self.calculate_load_score():.1f}",
+            'has_gpu': self.capabilities.has_gpu if self.capabilities else False,
         }
 
     def __repr__(self):
-        status = "✓" if self.metrics.is_healthy else "✗"
-        gpu = "🎮" if self.capabilities.has_gpu else "💻"
-        return f"{status} {gpu} {self.name} ({self.url}) - Load: {self.metrics.load_score:.2f}"
+        return f"OllamaNode(name={self.name}, url={self.url}, healthy={self.metrics.is_healthy})"

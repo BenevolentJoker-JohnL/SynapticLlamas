@@ -36,7 +36,7 @@ class CollaborativeWorkflow:
     def __init__(self, model: str = "llama3.2", max_refinement_rounds: int = 1,
                  distributed: bool = False, node_urls: List[str] = None, timeout: int = 300,
                  enable_ast_voting: bool = False, quality_threshold: float = 0.7,
-                 max_quality_retries: int = 2):
+                 max_quality_retries: int = 2, load_balancer=None):
         """
         Initialize collaborative workflow.
 
@@ -49,6 +49,7 @@ class CollaborativeWorkflow:
             enable_ast_voting: Enable AST quality voting
             quality_threshold: Minimum quality score to pass (0.0-1.0)
             max_quality_retries: Maximum re-refinement attempts for quality
+            load_balancer: SOLLOL load balancer for intelligent routing (optional)
         """
         self.model = model
         self.max_refinement_rounds = max_refinement_rounds
@@ -57,6 +58,7 @@ class CollaborativeWorkflow:
         self.node_urls = node_urls or ["http://localhost:11434"]
         self.timeout = timeout
         self.enable_ast_voting = enable_ast_voting
+        self.load_balancer = load_balancer
 
         if enable_ast_voting:
             self.ast_voting = ASTQualityVoting(
@@ -95,11 +97,21 @@ class CollaborativeWorkflow:
         critic.ollama_url = ollama_url
         editor.ollama_url = ollama_url
 
+        # Inject SOLLOL load balancer if available
+        if self.load_balancer is not None:
+            researcher._load_balancer = self.load_balancer
+            critic._load_balancer = self.load_balancer
+            editor._load_balancer = self.load_balancer
+            logger.info("🚀 Using SOLLOL at http://localhost:11434 (intelligent routing enabled)")
+
         # PHASE 1: Initial Research
-        logger.info("📚 Phase 1: Researcher - Initial research")
+        phase_msg = "📚 Phase 1: Researcher - Initial research"
+        logger.info(phase_msg)
+        print(f"\n{phase_msg}")
         phase_start = time.time()
         research_output = researcher.process(input_query)
         phase_1_time = time.time() - phase_start
+        print(f"   ⏱️  Phase 1 completed in {phase_1_time:.2f}s")
 
         research_msg = AgentMessage(
             agent_name="Researcher",
@@ -113,12 +125,15 @@ class CollaborativeWorkflow:
         logger.info(f"✅ Researcher completed (iteration 0) - {phase_1_time:.2f}s")
 
         # PHASE 2: Critique and Feedback
-        logger.info("🔍 Phase 2: Critic - Review and feedback")
+        phase_msg = "🔍 Phase 2: Critic - Review and feedback"
+        logger.info(phase_msg)
+        print(f"\n{phase_msg}")
         phase_start = time.time()
 
         critique_prompt = self._build_critique_prompt(input_query, research_output)
         critic_output = critic.process(critique_prompt)
         phase_2_time = time.time() - phase_start
+        print(f"   ⏱️  Phase 2 completed in {phase_2_time:.2f}s")
 
         critic_msg = AgentMessage(
             agent_name="Critic",
@@ -174,7 +189,9 @@ class CollaborativeWorkflow:
                     logger.info(f"✅ Researcher refinement {iteration} completed - {refinement_time:.2f}s")
 
         # PHASE 4: Final Synthesis
-        logger.info("✨ Phase 4: Editor - Final synthesis")
+        phase_msg = "✨ Phase 4: Editor - Final synthesis"
+        logger.info(phase_msg)
+        print(f"\n{phase_msg}")
         phase_start = time.time()
 
         synthesis_prompt = self._build_synthesis_prompt(
@@ -185,6 +202,7 @@ class CollaborativeWorkflow:
 
         final_output = editor.process(synthesis_prompt)
         phase_4_time = time.time() - phase_start
+        print(f"   ⏱️  Phase 4 completed in {phase_4_time:.2f}s")
 
         final_msg = AgentMessage(
             agent_name="Editor",
@@ -390,6 +408,10 @@ Output valid JSON now:"""
                 # Create new researcher for this node
                 node_researcher = Researcher(self.model, timeout=self.timeout)
                 node_researcher.ollama_url = node_url
+
+                # Inject SOLLOL load balancer if available
+                if self.load_balancer is not None:
+                    node_researcher._load_balancer = self.load_balancer
 
                 future = executor.submit(node_researcher.process, prompt)
                 futures.append((future, i, node_url))
