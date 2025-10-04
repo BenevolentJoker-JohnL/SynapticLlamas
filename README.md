@@ -38,6 +38,36 @@ response = client.chat("llama3.2", "Summarize quantum computing")
 
 **This isn't basic load balancing.** This is production-grade intelligent routing with complete observability, working out of the box.
 
+### 🚀 NEW: Distributed Inference for Large Models
+
+**Run 405B models on consumer hardware with Ollama API:**
+
+```python
+# Enable distributed inference for large models
+client = Ollama(
+    enable_distributed=True,
+    rpc_nodes=[
+        {"host": "192.168.1.10", "port": 50052},
+        {"host": "192.168.1.11", "port": 50052}
+    ]
+)
+
+# Small models → Ollama (automatic)
+client.chat("llama3.2", "Hello!")
+
+# Large models → llama.cpp distributed (automatic)
+client.chat("llama3.1:405b", "Explain quantum computing")
+```
+
+**What just happened:**
+- ✅ Small models routed to Ollama pool (fast, simple)
+- ✅ Large models routed to llama.cpp distributed cluster
+- ✅ Automatic selection based on model size
+- ✅ Same API for ANY size model
+- ✅ **The ONLY Ollama-compatible load balancer that actually works with 405B models**
+
+📚 **[Full Documentation →](DISTRIBUTED_INFERENCE.md)**
+
 ---
 
 ## The Problem

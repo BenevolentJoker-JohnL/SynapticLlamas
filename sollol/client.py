@@ -275,10 +275,11 @@ from .pool import OllamaPool
 
 class Ollama:
     """
-    Zero-config Ollama client with automatic load balancing.
+    Zero-config Ollama client with automatic load balancing and distributed inference.
 
     No configuration needed - just create and use. Automatically discovers
-    Ollama nodes and load balances across them.
+    Ollama nodes and load balances across them. Optionally supports llama.cpp
+    distributed inference for large models (70B+).
 
     This is different from SOLLOLClient:
     - SOLLOLClient: Connects to SOLLOL gateway (http://localhost:8000)
@@ -287,23 +288,36 @@ class Ollama:
     Usage:
         from sollol import Ollama
 
-        client = Ollama()  # Auto-discovers nodes
+        # Basic usage (Ollama only)
+        client = Ollama()
         response = client.chat("llama3.2", "Hello!")
+
+        # With distributed inference for large models
+        client = Ollama(enable_distributed=True, rpc_nodes=[
+            {"host": "192.168.1.10", "port": 50052},
+            {"host": "192.168.1.11", "port": 50052}
+        ])
+        response = client.chat("llama3.1:405b", "Explain quantum computing")
     """
 
     def __init__(
         self,
         nodes: Optional[List[Dict[str, str]]] = None,
         host: Optional[str] = None,
-        port: Optional[int] = None
+        port: Optional[int] = None,
+        enable_distributed: bool = False,
+        rpc_nodes: Optional[List[Dict[str, Any]]] = None
     ):
         """
-        Initialize Ollama client.
+        Initialize Ollama client with optional distributed inference.
 
         Args:
-            nodes: List of node dicts (optional, auto-discovers if not provided)
+            nodes: List of Ollama node dicts (optional, auto-discovers if not provided)
             host: Single host (convenience, creates single-node pool)
             port: Port for single host (default: 11434)
+            enable_distributed: Enable llama.cpp distributed inference for large models
+            rpc_nodes: llama.cpp RPC nodes for distributed inference
+                      Format: [{"host": "ip", "port": 50052, "model_path": "path.gguf"}]
         """
         # Handle single host convenience parameter
         if host is not None:
@@ -313,6 +327,34 @@ class Ollama:
         # Create pool (auto-discovers if nodes=None)
         self.pool = OllamaPool(nodes=nodes)
 
+        # Setup hybrid routing if distributed enabled
+        self.hybrid_router = None
+        self.enable_distributed = enable_distributed
+
+        if enable_distributed and rpc_nodes:
+            from .llama_cpp_rpc import LlamaCppNode
+            from .hybrid_router import HybridRouter
+
+            # Convert RPC node dicts to LlamaCppNode objects
+            llamacpp_nodes = [
+                LlamaCppNode(
+                    host=node['host'],
+                    port=node['port'],
+                    model_path=node.get('model_path', ''),
+                    layers_start=node.get('layers_start', 0),
+                    layers_end=node.get('layers_end', 0)
+                )
+                for node in rpc_nodes
+            ]
+
+            self.hybrid_router = HybridRouter(
+                ollama_pool=self.pool,
+                llamacpp_nodes=llamacpp_nodes,
+                enable_distributed=True
+            )
+
+            logger.info("🚀 Ollama client initialized with distributed inference support")
+
     def chat(
         self,
         model: str,
@@ -320,10 +362,14 @@ class Ollama:
         **kwargs
     ) -> str:
         """
-        Chat completion.
+        Chat completion with automatic routing.
+
+        Automatically routes to:
+        - Ollama pool for small/medium models (<= 70B)
+        - llama.cpp distributed cluster for large models (> 70B)
 
         Args:
-            model: Model name (e.g., "llama3.2")
+            model: Model name (e.g., "llama3.2", "llama3.1:405b")
             messages: Either a string (converted to user message) or list of message dicts
             **kwargs: Additional Ollama parameters
 
@@ -334,13 +380,26 @@ class Ollama:
             >>> client = Ollama()
             >>> response = client.chat("llama3.2", "Hello!")
             >>> print(response)
+
+            >>> # With distributed inference
+            >>> client = Ollama(enable_distributed=True, rpc_nodes=[...])
+            >>> response = client.chat("llama3.1:405b", "Explain quantum computing")
+            >>> print(response)
         """
         # Convert string to messages format
         if isinstance(messages, str):
             messages = [{"role": "user", "content": messages}]
 
-        # Make request
-        result = self.pool.chat(model=model, messages=messages, **kwargs)
+        # Route based on whether distributed is enabled and model size
+        if self.hybrid_router:
+            # Use hybrid router for intelligent backend selection
+            import asyncio
+            result = asyncio.run(
+                self.hybrid_router.route_request(model, messages, **kwargs)
+            )
+        else:
+            # Use standard Ollama pool
+            result = self.pool.chat(model=model, messages=messages, **kwargs)
 
         # Extract text from response
         return result.get('message', {}).get('content', '')
