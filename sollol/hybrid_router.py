@@ -75,7 +75,9 @@ class HybridRouter:
         coordinator_host: str = "127.0.0.1",
         coordinator_port: int = 8080,
         enable_distributed: bool = True,
-        auto_discover_rpc: bool = True
+        auto_discover_rpc: bool = True,
+        auto_setup_rpc: bool = False,
+        num_rpc_backends: int = 1
     ):
         """
         Initialize hybrid router with automatic GGUF resolution from Ollama.
@@ -83,11 +85,13 @@ class HybridRouter:
         Args:
             ollama_pool: OllamaPool for standard requests
             rpc_backends: List of RPC backend configs [{"host": "ip", "port": 50052}]
-                         If None and auto_discover_rpc=True, will auto-discover
+                         If None and auto_discover_rpc=True, will auto-discover/setup
             coordinator_host: Host for llama-server coordinator
             coordinator_port: Port for llama-server coordinator
             enable_distributed: Enable llama.cpp distributed routing
             auto_discover_rpc: Auto-discover RPC backends if none provided
+            auto_setup_rpc: Auto-setup RPC backends if none found (requires llama.cpp)
+            num_rpc_backends: Number of RPC backends to start if auto-setup is enabled
         """
         self.ollama_pool = ollama_pool
 
@@ -101,6 +105,24 @@ class HybridRouter:
                 logger.info(f"✅ Auto-discovered {len(discovered)} RPC backends")
             else:
                 logger.info("ℹ️  No RPC backends found via auto-discovery")
+
+                # Try auto-setup if enabled
+                if auto_setup_rpc:
+                    logger.info("🚀 Attempting to auto-setup RPC backends...")
+                    from .rpc_auto_setup import auto_setup_rpc_backends
+                    try:
+                        setup_backends = auto_setup_rpc_backends(
+                            num_backends=num_rpc_backends,
+                            auto_build=True,
+                            discover_network=False
+                        )
+                        if setup_backends:
+                            rpc_backends = setup_backends
+                            logger.info(f"✅ Auto-setup created {len(setup_backends)} RPC backends")
+                        else:
+                            logger.warning("⚠️  Auto-setup failed to create RPC backends")
+                    except Exception as e:
+                        logger.error(f"❌ Auto-setup failed: {e}")
 
         self.enable_distributed = enable_distributed and rpc_backends is not None
 
