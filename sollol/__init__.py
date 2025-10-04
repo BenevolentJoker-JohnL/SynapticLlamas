@@ -42,7 +42,7 @@ if sys.platform != 'win32':
 
 from sollol.sollol import SOLLOL
 from sollol.config import SOLLOLConfig
-from sollol.client import SOLLOLClient, connect
+from sollol.client import SOLLOLClient, connect, Ollama
 # Distributed execution (new in v0.2.0)
 from sollol.tasks import DistributedTask, TaskResult, ExecutionResult
 from sollol.execution import DistributedExecutor, AsyncDistributedExecutor
@@ -54,6 +54,7 @@ __all__ = [
     "SOLLOLConfig",
     "SOLLOLClient",
     "connect",
+    "Ollama",  # Zero-config client (new!)
     # Distributed Execution
     "DistributedTask",
     "TaskResult",

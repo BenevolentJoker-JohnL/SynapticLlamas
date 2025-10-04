@@ -4,6 +4,33 @@
 
 ---
 
+## 🚀 Quick Start (30 seconds)
+
+**Zero-config Ollama load balancing - just import and use:**
+
+```bash
+pip install -e .
+```
+
+```python
+from sollol import Ollama
+
+# That's it - auto-discovers nodes, load balances, just works
+client = Ollama()
+response = client.chat("llama3.2", "Hello!")
+print(response)
+```
+
+**What just happened:**
+- ✅ Auto-discovered Ollama nodes (localhost + network scan) in <1 second
+- ✅ Created connection pool automatically
+- ✅ Load balanced your request across nodes
+- ✅ Zero configuration, zero setup
+
+**Want the full power?** Keep reading to learn about GPU control, intelligent routing, and performance guarantees.
+
+---
+
 ## The Problem
 
 You have multiple Ollama nodes on your network. You want to run AI agents in parallel for faster processing. Sounds simple, right?

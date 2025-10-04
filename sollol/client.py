@@ -264,3 +264,145 @@ def connect(base_url: str = "http://localhost:8000", **kwargs) -> SOLLOLClient:
     """
     config = SOLLOLConfig(base_url=base_url, **kwargs)
     return SOLLOLClient(config)
+
+
+# ===================================================================
+# Zero-Config Ollama Client (Direct node access, no SOLLOL gateway)
+# ===================================================================
+
+from .pool import OllamaPool
+
+
+class Ollama:
+    """
+    Zero-config Ollama client with automatic load balancing.
+
+    No configuration needed - just create and use. Automatically discovers
+    Ollama nodes and load balances across them.
+
+    This is different from SOLLOLClient:
+    - SOLLOLClient: Connects to SOLLOL gateway (http://localhost:8000)
+    - Ollama: Connects directly to Ollama nodes (auto-discovered)
+
+    Usage:
+        from sollol import Ollama
+
+        client = Ollama()  # Auto-discovers nodes
+        response = client.chat("llama3.2", "Hello!")
+    """
+
+    def __init__(
+        self,
+        nodes: Optional[List[Dict[str, str]]] = None,
+        host: Optional[str] = None,
+        port: Optional[int] = None
+    ):
+        """
+        Initialize Ollama client.
+
+        Args:
+            nodes: List of node dicts (optional, auto-discovers if not provided)
+            host: Single host (convenience, creates single-node pool)
+            port: Port for single host (default: 11434)
+        """
+        # Handle single host convenience parameter
+        if host is not None:
+            port = port or 11434
+            nodes = [{"host": host, "port": str(port)}]
+
+        # Create pool (auto-discovers if nodes=None)
+        self.pool = OllamaPool(nodes=nodes)
+
+    def chat(
+        self,
+        model: str,
+        messages: Any,  # Can be str or List[Dict]
+        **kwargs
+    ) -> str:
+        """
+        Chat completion.
+
+        Args:
+            model: Model name (e.g., "llama3.2")
+            messages: Either a string (converted to user message) or list of message dicts
+            **kwargs: Additional Ollama parameters
+
+        Returns:
+            Response text
+
+        Example:
+            >>> client = Ollama()
+            >>> response = client.chat("llama3.2", "Hello!")
+            >>> print(response)
+        """
+        # Convert string to messages format
+        if isinstance(messages, str):
+            messages = [{"role": "user", "content": messages}]
+
+        # Make request
+        result = self.pool.chat(model=model, messages=messages, **kwargs)
+
+        # Extract text from response
+        return result.get('message', {}).get('content', '')
+
+    def generate(
+        self,
+        model: str,
+        prompt: str,
+        **kwargs
+    ) -> str:
+        """
+        Generate text.
+
+        Args:
+            model: Model name
+            prompt: Text prompt
+            **kwargs: Additional Ollama parameters
+
+        Returns:
+            Generated text
+
+        Example:
+            >>> client = Ollama()
+            >>> text = client.generate("llama3.2", "Once upon a time")
+            >>> print(text)
+        """
+        result = self.pool.generate(model=model, prompt=prompt, **kwargs)
+        return result.get('response', '')
+
+    def embed(
+        self,
+        model: str,
+        text: str,
+        **kwargs
+    ) -> List[float]:
+        """
+        Generate embeddings.
+
+        Args:
+            model: Embedding model name (e.g., "mxbai-embed-large")
+            text: Text to embed
+            **kwargs: Additional Ollama parameters
+
+        Returns:
+            Embedding vector
+
+        Example:
+            >>> client = Ollama()
+            >>> embedding = client.embed("mxbai-embed-large", "Hello world")
+            >>> print(len(embedding))
+            1024
+        """
+        result = self.pool.embed(model=model, input=text, **kwargs)
+
+        # Handle different response formats
+        embeddings = result.get('embeddings', [[]])[0] if result.get('embeddings') else result.get('embedding', [])
+        return embeddings
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get load balancing statistics."""
+        return self.pool.get_stats()
+
+    def __repr__(self):
+        stats = self.pool.get_stats()
+        return f"Ollama(nodes={stats['nodes_configured']}, requests={stats['total_requests']})"
