@@ -50,7 +50,9 @@ def load_config():
         "max_quality_retries": 2,
         "flockparser_enabled": False,
         "model": "llama3.2",
-        "strategy": None  # None = auto, or ExecutionMode value string
+        "strategy": None,  # None = auto, or ExecutionMode value string
+        "distributed_inference_enabled": False,
+        "rpc_backends": []  # List of RPC backend configs
     }
 
     if os.path.exists(CONFIG_PATH):
@@ -112,6 +114,10 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
     # FlockParser RAG settings
     flockparser_enabled = config.get("flockparser_enabled", False)
 
+    # Distributed inference settings
+    distributed_inference_enabled = config.get("distributed_inference_enabled", False)
+    rpc_backends = config.get("rpc_backends", [])
+
     # Helper to auto-save settings
     def update_config(**kwargs):
         nonlocal config
@@ -163,6 +169,13 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
         rag_status = "[green]ON[/green]" if flockparser_enabled else "[dim]OFF[/dim]"
         print_command(f"rag on/off [{rag_status}]", "Toggle PDF RAG enhancement")
 
+        console.print("\n[bold red]🔗 DISTRIBUTED INFERENCE (llama.cpp)[/bold red]")
+        dist_status = "[green]ON[/green]" if distributed_inference_enabled else "[dim]OFF[/dim]"
+        print_command(f"distributed on/off [{dist_status}]", "Toggle llama.cpp distributed inference")
+        print_command(f"rpc add <host:port>", "Add RPC backend (default port: 50052)")
+        print_command(f"rpc remove <host:port>", "Remove RPC backend")
+        print_command(f"rpc list", f"List RPC backends ({len(rpc_backends)} configured)")
+
         console.print("\n[bold red]🔧 NODE COMMANDS[/bold red]")
         print_command("nodes", "List Ollama nodes")
         print_command("add <url>", "Add Ollama node")
@@ -206,7 +219,9 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
             if global_orchestrator is None:
                 global_orchestrator = DistributedOrchestrator(
                     global_registry,
-                    use_flockparser=flockparser_enabled
+                    use_flockparser=flockparser_enabled,
+                    enable_distributed_inference=distributed_inference_enabled,
+                    rpc_backends=rpc_backends if distributed_inference_enabled else None
                 )
             return None, global_orchestrator
         else:
@@ -389,6 +404,100 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     else:
                         print("❌ Use 'rag on' or 'rag off'\n")
 
+            # Distributed inference toggle
+            elif command == 'distributed':
+                if len(parts) < 2:
+                    print(f"❌ Usage: distributed [on|off]\n")
+                else:
+                    toggle = parts[1].lower()
+                    if toggle == 'on':
+                        if len(rpc_backends) == 0:
+                            print("⚠️  No RPC backends configured!")
+                            print("   Add RPC backends first: rpc add <host:port>\n")
+                        else:
+                            distributed_inference_enabled = True
+                            update_config(distributed_inference_enabled=True)
+                            # Force re-initialization
+                            global_orchestrator = None
+                            print("✅ llama.cpp distributed inference ENABLED")
+                            print(f"   Using {len(rpc_backends)} RPC backend(s)")
+                            print("   Large models (>70B) will use distributed inference\n")
+                    elif toggle == 'off':
+                        distributed_inference_enabled = False
+                        update_config(distributed_inference_enabled=False)
+                        # Force re-initialization
+                        global_orchestrator = None
+                        print("✅ llama.cpp distributed inference DISABLED\n")
+                    else:
+                        print("❌ Use 'distributed on' or 'distributed off'\n")
+
+            # RPC backend management
+            elif command == 'rpc':
+                if len(parts) < 2:
+                    print("❌ Usage: rpc [add|remove|list] <host:port>\n")
+                else:
+                    subcommand = parts[1].lower()
+                    if subcommand == 'list':
+                        if len(rpc_backends) == 0:
+                            print("📡 No RPC backends configured\n")
+                        else:
+                            print(f"📡 Configured RPC Backends ({len(rpc_backends)}):")
+                            for backend in rpc_backends:
+                                print(f"   • {backend['host']}:{backend['port']}")
+                            print()
+                    elif subcommand == 'add':
+                        if len(parts) < 3:
+                            print("❌ Usage: rpc add <host:port>\n")
+                        else:
+                            backend_str = parts[2]
+                            if ':' in backend_str:
+                                host, port = backend_str.rsplit(':', 1)
+                                port = int(port)
+                            else:
+                                host = backend_str
+                                port = 50052  # Default RPC port
+
+                            backend = {"host": host, "port": port}
+                            if backend not in rpc_backends:
+                                rpc_backends.append(backend)
+                                update_config(rpc_backends=rpc_backends)
+                                # Force re-initialization if distributed inference is enabled
+                                if distributed_inference_enabled:
+                                    global_orchestrator = None
+                                print(f"✅ Added RPC backend: {host}:{port}")
+                                print(f"   Total backends: {len(rpc_backends)}\n")
+                            else:
+                                print(f"⚠️  Backend already configured: {host}:{port}\n")
+                    elif subcommand == 'remove':
+                        if len(parts) < 3:
+                            print("❌ Usage: rpc remove <host:port>\n")
+                        else:
+                            backend_str = parts[2]
+                            if ':' in backend_str:
+                                host, port = backend_str.rsplit(':', 1)
+                                port = int(port)
+                            else:
+                                host = backend_str
+                                port = 50052
+
+                            backend = {"host": host, "port": port}
+                            if backend in rpc_backends:
+                                rpc_backends.remove(backend)
+                                update_config(rpc_backends=rpc_backends)
+                                # Force re-initialization if distributed inference is enabled
+                                if distributed_inference_enabled:
+                                    global_orchestrator = None
+                                print(f"✅ Removed RPC backend: {host}:{port}")
+                                print(f"   Total backends: {len(rpc_backends)}\n")
+
+                                # Warn if distributed inference is enabled with no backends
+                                if distributed_inference_enabled and len(rpc_backends) == 0:
+                                    print("⚠️  No RPC backends remaining! Distributed inference will fail.\n")
+                            else:
+                                print(f"❌ Backend not found: {host}:{port}\n")
+                    else:
+                        print("❌ Unknown subcommand. Use: rpc [add|remove|list]\n")
+
             # Strategy selection
             elif command == 'strategy':
                 if len(parts) < 2:
@@ -428,7 +537,9 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     "Refinement Rounds": refinement_rounds if collaborative_mode else 'N/A',
                     "Ollama Nodes": len(global_registry),
                     "Healthy Nodes": len(global_registry.get_healthy_nodes()),
-                    "GPU Nodes": len(global_registry.get_gpu_nodes())
+                    "GPU Nodes": len(global_registry.get_gpu_nodes()),
+                    "Distributed Inference": 'ON' if distributed_inference_enabled else 'OFF',
+                    "RPC Backends": len(rpc_backends) if distributed_inference_enabled else 'N/A'
                 }
                 if current_mode == 'dask' and executor:
                     status_data["Dask Workers"] = len(executor.client.scheduler_info()['workers'])
@@ -467,8 +578,15 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                 # Get the current registry and load balancer
                 current_registry = global_registry
                 current_lb = None
+                current_hybrid_router = None
+
                 if orchestrator and hasattr(orchestrator, 'load_balancer'):
                     current_lb = orchestrator.load_balancer
+
+                # Get hybrid router if available
+                if orchestrator and hasattr(orchestrator, 'hybrid_router'):
+                    current_hybrid_router = orchestrator.hybrid_router
+                    logger.info("📡 Dashboard will monitor llama.cpp backend")
 
                 def run_dashboard_thread():
                     # Import here to avoid circular imports
@@ -478,7 +596,8 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         host='0.0.0.0',
                         port=8080,
                         node_registry=current_registry,
-                        sollol_lb=current_lb
+                        sollol_lb=current_lb,
+                        hybrid_router_ref=current_hybrid_router
                     )
 
                 dashboard_thread = threading.Thread(target=run_dashboard_thread, daemon=True, name="DashboardServer")
@@ -848,6 +967,8 @@ def main():
     parser.add_argument('--add-node', type=str, help='Add a node URL before starting')
     parser.add_argument('--discover', type=str, help='Discover nodes on network (CIDR notation)')
     parser.add_argument('--load-config', type=str, help='Load node configuration from file')
+    parser.add_argument('--enable-distributed-inference', action='store_true', help='Enable llama.cpp distributed inference')
+    parser.add_argument('--rpc-backend', type=str, action='append', help='Add RPC backend (host:port), can be used multiple times')
 
     args = parser.parse_args()
 
@@ -875,6 +996,28 @@ def main():
         if args.load_config:
             global_registry.load_config(args.load_config)
             print(f"✅ Loaded config from {args.load_config}")
+
+        # Handle distributed inference setup from CLI
+        if args.enable_distributed_inference:
+            config = load_config()
+            config['distributed_inference_enabled'] = True
+
+            # Add RPC backends from CLI
+            if args.rpc_backend:
+                rpc_backends = []
+                for backend_str in args.rpc_backend:
+                    if ':' in backend_str:
+                        host, port = backend_str.rsplit(':', 1)
+                        port = int(port)
+                    else:
+                        host = backend_str
+                        port = 50052
+                    rpc_backends.append({"host": host, "port": port})
+
+                config['rpc_backends'] = rpc_backends
+                print(f"🔗 Configured {len(rpc_backends)} RPC backend(s) for distributed inference")
+
+            save_config(config)
 
     # Interactive mode
     if args.interactive or not args.input:

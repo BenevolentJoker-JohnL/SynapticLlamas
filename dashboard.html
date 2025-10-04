@@ -234,9 +234,11 @@
             <div class="log-tabs">
                 <button class="log-tab active" onclick="switchLogTab('app')">Application Logs</button>
                 <button class="log-tab" onclick="switchLogTab('ollama')">Ollama Node Activity</button>
+                <button class="log-tab" onclick="switchLogTab('llamacpp')">llama.cpp Backend</button>
             </div>
             <div id="app-log-panel" class="log-panel"></div>
             <div id="ollama-log-panel" class="log-panel" style="display:none;"></div>
+            <div id="llamacpp-log-panel" class="log-panel" style="display:none;"></div>
         </div>
     </div>
 
@@ -331,23 +333,63 @@
                 });
             };
 
+            // llama.cpp Log WebSocket
+            const llamacppWsUrl = `${WS_BASE}/ws/llama_cpp_logs`;
+            let llamacppWs;
+            const llamacppLogPanel = document.getElementById('llamacpp-log-panel');
+            const connectLlamacppLogs = () => {
+                llamacppWs = connectWebSocket(llamacppWsUrl, (event) => {
+                    const data = JSON.parse(event.data);
+                    const logLine = document.createElement('div');
+                    logLine.className = `log-line ${data.level}`;
+
+                    const timestamp = new Date(data.timestamp * 1000).toLocaleTimeString();
+                    const component = data.component || 'system';
+                    const componentColor = component === 'coordinator' ? '#667eea' :
+                                          component === 'rpc_backend' ? '#4ade80' : '#9ca3af';
+                    logLine.innerHTML = `<span style="color:#666">[${timestamp}]</span> <span style="color:${componentColor}">[${component}]</span> ${data.message}`;
+
+                    llamacppLogPanel.appendChild(logLine);
+                    llamacppLogPanel.scrollTop = llamacppLogPanel.scrollHeight;
+                    // Keep max 500 lines
+                    while (llamacppLogPanel.childElementCount > 500) {
+                        llamacppLogPanel.removeChild(llamacppLogPanel.firstChild);
+                    }
+                }, () => {
+                    console.log('llama.cpp Log WebSocket connected.');
+                    if (llamacppLogPanel.childElementCount === 0) {
+                         llamacppLogPanel.innerHTML = '<div class="no-data">Waiting for llama.cpp backend activity...</div>';
+                    }
+                }, () => {
+                    console.log('llama.cpp Log WebSocket disconnected. Reconnecting...');
+                    setTimeout(connectLlamacppLogs, 2000);
+                });
+            };
+
             connectDashboard();
             connectLogs();
             connectOllamaLogs();
+            connectLlamacppLogs();
         }
 
         function switchLogTab(tab) {
             const tabs = document.querySelectorAll('.log-tab');
             tabs.forEach(t => t.classList.remove('active'));
 
+            // Hide all panels
+            document.getElementById('app-log-panel').style.display = 'none';
+            document.getElementById('ollama-log-panel').style.display = 'none';
+            document.getElementById('llamacpp-log-panel').style.display = 'none';
+
             if (tab === 'app') {
                 tabs[0].classList.add('active');
                 document.getElementById('app-log-panel').style.display = 'block';
-                document.getElementById('ollama-log-panel').style.display = 'none';
-            } else {
+            } else if (tab === 'ollama') {
                 tabs[1].classList.add('active');
-                document.getElementById('app-log-panel').style.display = 'none';
                 document.getElementById('ollama-log-panel').style.display = 'block';
+            } else if (tab === 'llamacpp') {
+                tabs[2].classList.add('active');
+                document.getElementById('llamacpp-log-panel').style.display = 'block';
             }
         }
 

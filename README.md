@@ -38,7 +38,36 @@ response = client.chat("llama3.2", "Summarize quantum computing")
 
 **This isn't basic load balancing.** This is production-grade intelligent routing with complete observability, working out of the box.
 
-### 🚀 NEW: SOLLOL - Enhanced Ollama on Port 11434
+### 🚀 NEW: llama.cpp Distributed Inference - FULLY INTEGRATED
+
+**Run ANY size model with TRUE distributed inference!**
+
+SynapticLlamas now includes llama.cpp distributed inference support, allowing you to run models of ANY size (including 405B!) across consumer GPUs while maintaining the Ollama API.
+
+```bash
+# Quick Start - CLI Mode
+python3 main.py --distributed \
+  --enable-distributed-inference \
+  --rpc-backend 192.168.1.10:50052 \
+  --rpc-backend 192.168.1.11:50052
+
+# Quick Start - Interactive Mode
+python3 main.py
+SynapticLlamas> rpc add 192.168.1.10:50052
+SynapticLlamas> distributed on
+SynapticLlamas> dashboard  # Monitor everything!
+```
+
+**What you get:**
+- ✅ **Automatic GGUF extraction** from Ollama storage (no manual file management!)
+- ✅ **Intelligent routing** - Small models → Ollama, Large models → llama.cpp distributed
+- ✅ **Real-time monitoring** - Dashboard with llama.cpp backend logs
+- ✅ **Zero-config setup** - Just add RPC backends and enable
+- ✅ **Persistent configuration** - Settings saved automatically
+
+📚 **[Full Integration Guide →](LLAMA_CPP_INTEGRATION.md)**
+
+### 🚀 ALSO: SOLLOL Gateway (Standalone)
 
 **SOLLOL IS your Ollama - just run it!**
 

@@ -57,6 +57,7 @@ sock = Sock(app)
 # Global references
 registry = None
 load_balancer = None
+hybrid_router = None  # For llama.cpp monitoring
 
 def get_dashboard_data():
     """Get comprehensive dashboard data."""
@@ -385,9 +386,206 @@ def ws_ollama_logs(ws):
                 pass
             break
 
-def run_dashboard(host='0.0.0.0', port=8080, node_registry=None, sollol_lb=None):
+@sock.route('/ws/llama_cpp_logs')
+def ws_llama_cpp_logs(ws):
+    """WebSocket endpoint for streaming llama.cpp coordinator and RPC backend activity."""
+    logger.info("llama.cpp logs WebSocket client connected.")
+
+    # Send initial connection message
+    try:
+        init_msg = {
+            'timestamp': time.time(),
+            'component': 'system',
+            'type': 'info',
+            'message': '🔌 Connected to llama.cpp monitoring',
+            'level': 'info'
+        }
+        ws.send(json.dumps(init_msg))
+    except Exception as e:
+        logger.error(f"Failed to send init message: {e}")
+
+    # Track previous state
+    previous_state = {
+        'coordinator_running': False,
+        'coordinator_model': None,
+        'rpc_backends': set(),
+        'last_heartbeat': 0
+    }
+
+    while True:
+        try:
+            logs = []
+
+            # Check if we have a hybrid router to monitor
+            if not hybrid_router:
+                # Send status update less frequently
+                current_time = time.time()
+                if current_time - previous_state['last_heartbeat'] >= 30:
+                    status_msg = {
+                        'timestamp': time.time(),
+                        'component': 'system',
+                        'type': 'info',
+                        'message': '📡 No hybrid router configured (Ollama-only mode)',
+                        'level': 'info'
+                    }
+                    ws.send(json.dumps(status_msg))
+                    previous_state['last_heartbeat'] = current_time
+                time.sleep(5)
+                continue
+
+            # Check coordinator status
+            coordinator = getattr(hybrid_router, 'coordinator', None)
+            coordinator_model = getattr(hybrid_router, 'coordinator_model', None)
+            rpc_backends = getattr(hybrid_router, 'rpc_backends', None)
+            enable_distributed = getattr(hybrid_router, 'enable_distributed', False)
+
+            # Detect coordinator start
+            if coordinator and not previous_state['coordinator_running']:
+                model_path = getattr(coordinator, 'model_path', 'unknown')
+                port = getattr(coordinator, 'port', 'unknown')
+                log_entry = {
+                    'timestamp': time.time(),
+                    'component': 'coordinator',
+                    'type': 'start',
+                    'message': f"🚀 llama.cpp coordinator started (port {port})",
+                    'level': 'info',
+                    'details': {
+                        'model_path': model_path,
+                        'port': port
+                    }
+                }
+                logs.append(json.dumps(log_entry))
+                previous_state['coordinator_running'] = True
+
+            # Detect coordinator stop
+            if not coordinator and previous_state['coordinator_running']:
+                log_entry = {
+                    'timestamp': time.time(),
+                    'component': 'coordinator',
+                    'type': 'stop',
+                    'message': '⏹️  llama.cpp coordinator stopped',
+                    'level': 'warning'
+                }
+                logs.append(json.dumps(log_entry))
+                previous_state['coordinator_running'] = False
+
+            # Detect model loading in coordinator
+            if coordinator_model != previous_state['coordinator_model']:
+                if coordinator_model:
+                    log_entry = {
+                        'timestamp': time.time(),
+                        'component': 'coordinator',
+                        'type': 'model_load',
+                        'message': f"📦 Model loaded: {coordinator_model}",
+                        'level': 'info',
+                        'details': {'model': coordinator_model}
+                    }
+                    logs.append(json.dumps(log_entry))
+                previous_state['coordinator_model'] = coordinator_model
+
+            # Monitor RPC backends
+            if rpc_backends:
+                current_backends = set()
+                for backend_config in rpc_backends:
+                    host = backend_config.get('host', 'unknown')
+                    port = backend_config.get('port', 50052)
+                    backend_addr = f"{host}:{port}"
+                    current_backends.add(backend_addr)
+
+                    # Detect new RPC backend
+                    if backend_addr not in previous_state['rpc_backends']:
+                        log_entry = {
+                            'timestamp': time.time(),
+                            'component': 'rpc_backend',
+                            'type': 'connect',
+                            'message': f"🔗 RPC backend connected: {backend_addr}",
+                            'level': 'info',
+                            'details': {'backend': backend_addr}
+                        }
+                        logs.append(json.dumps(log_entry))
+
+                # Detect removed RPC backends
+                removed_backends = previous_state['rpc_backends'] - current_backends
+                for backend_addr in removed_backends:
+                    log_entry = {
+                        'timestamp': time.time(),
+                        'component': 'rpc_backend',
+                        'type': 'disconnect',
+                        'message': f"🔌 RPC backend disconnected: {backend_addr}",
+                        'level': 'warning',
+                        'details': {'backend': backend_addr}
+                    }
+                    logs.append(json.dumps(log_entry))
+
+                previous_state['rpc_backends'] = current_backends
+
+            # Show status if coordinator is running
+            if coordinator:
+                process = getattr(coordinator, 'process', None)
+                if process and process.poll() is None:  # Process is running
+                    # Check if there's any recent activity by trying to read from stderr
+                    # (llama-server logs to stderr)
+                    # This is just a status check, not reading logs
+                    current_time = time.time()
+                    if current_time - previous_state['last_heartbeat'] >= 30:
+                        backend_count = len(previous_state['rpc_backends'])
+                        status_msg = {
+                            'timestamp': time.time(),
+                            'component': 'coordinator',
+                            'type': 'status',
+                            'message': f"✓ Coordinator active ({backend_count} RPC backends)",
+                            'level': 'info',
+                            'details': {
+                                'backends': list(previous_state['rpc_backends']),
+                                'model': coordinator_model
+                            }
+                        }
+                        logs.append(json.dumps(status_msg))
+                        previous_state['last_heartbeat'] = current_time
+
+            # Send all log entries
+            for log in logs:
+                try:
+                    ws.send(log)
+                except Exception as e:
+                    logger.error(f"Failed to send llama.cpp log: {e}")
+                    raise
+
+            # Heartbeat for distributed mode status
+            if not enable_distributed:
+                current_time = time.time()
+                if current_time - previous_state['last_heartbeat'] >= 30:
+                    heartbeat = {
+                        'timestamp': time.time(),
+                        'component': 'system',
+                        'type': 'info',
+                        'message': '📡 Distributed inference disabled',
+                        'level': 'info'
+                    }
+                    ws.send(json.dumps(heartbeat))
+                    previous_state['last_heartbeat'] = current_time
+
+            # Poll every 2 seconds
+            time.sleep(2)
+
+        except Exception as e:
+            logger.error(f"llama.cpp logs WebSocket error: {e}", exc_info=True)
+            try:
+                error_msg = {
+                    'timestamp': time.time(),
+                    'component': 'system',
+                    'type': 'error',
+                    'message': f'Error: {str(e)}',
+                    'level': 'error'
+                }
+                ws.send(json.dumps(error_msg))
+            except:
+                pass
+            break
+
+def run_dashboard(host='0.0.0.0', port=8080, node_registry=None, sollol_lb=None, hybrid_router_ref=None):
     """Run the dashboard server."""
-    global registry, load_balancer
+    global registry, load_balancer, hybrid_router
 
     if node_registry is None:
         from node_registry import NodeRegistry
@@ -404,6 +602,11 @@ def run_dashboard(host='0.0.0.0', port=8080, node_registry=None, sollol_lb=None)
         load_balancer = SOLLOLLoadBalancer(registry)
     else:
         load_balancer = sollol_lb
+
+    # Set hybrid router for llama.cpp monitoring
+    if hybrid_router_ref is not None:
+        hybrid_router = hybrid_router_ref
+        logger.info("🔧 llama.cpp monitoring enabled for dashboard")
 
     # Capture werkzeug logs and route them to the queue
     werkzeug_logger = logging.getLogger('werkzeug')

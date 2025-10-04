@@ -34,7 +34,8 @@ class DistributedOrchestrator:
     - Performance tracking
     """
 
-    def __init__(self, registry: NodeRegistry = None, use_sollol: bool = True, use_flockparser: bool = False):
+    def __init__(self, registry: NodeRegistry = None, use_sollol: bool = True, use_flockparser: bool = False,
+                 enable_distributed_inference: bool = False, rpc_backends: list = None):
         """
         Initialize distributed orchestrator with SOLLOL.
 
@@ -42,6 +43,8 @@ class DistributedOrchestrator:
             registry: NodeRegistry instance (creates default if None)
             use_sollol: Use SOLLOL intelligent routing (default: True)
             use_flockparser: Enable FlockParser RAG enhancement (default: False)
+            enable_distributed_inference: Enable llama.cpp distributed inference (default: False)
+            rpc_backends: List of RPC backend configs for distributed inference
         """
         self.registry = registry or NodeRegistry()
 
@@ -56,6 +59,31 @@ class DistributedOrchestrator:
 
         self.adaptive_selector = AdaptiveStrategySelector(self.registry)
         self.use_sollol = use_sollol
+
+        # Initialize HybridRouter for distributed inference with llama.cpp
+        self.hybrid_router = None
+        self.enable_distributed_inference = enable_distributed_inference
+        if enable_distributed_inference:
+            try:
+                from sollol.hybrid_router import HybridRouter
+                from sollol.pool import OllamaPool
+
+                # Create OllamaPool from existing registry nodes
+                ollama_nodes = [{"host": node.url.replace("http://", "").split(":")[0],
+                                "port": node.url.split(":")[-1]}
+                               for node in self.registry.nodes.values()]
+                ollama_pool = OllamaPool(nodes=ollama_nodes if ollama_nodes else None)
+
+                # Create hybrid router
+                self.hybrid_router = HybridRouter(
+                    ollama_pool=ollama_pool,
+                    rpc_backends=rpc_backends,
+                    enable_distributed=True
+                )
+                logger.info(f"🔗 llama.cpp distributed inference enabled with {len(rpc_backends) if rpc_backends else 0} RPC backends")
+            except Exception as e:
+                logger.error(f"Failed to initialize HybridRouter: {e}")
+                self.enable_distributed_inference = False
 
         # Initialize FlockParser RAG adapter
         self.use_flockparser = use_flockparser
