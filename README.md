@@ -6,28 +6,37 @@
 
 ## 🚀 Quick Start (30 seconds)
 
-**Zero-config Ollama load balancing - just import and use:**
+**Zero-config Ollama with full SynapticLlamas observability:**
 
 ```bash
 pip install -e .
 ```
 
 ```python
+import logging
+logging.basicConfig(level=logging.INFO)  # See the magic happen
+
 from sollol import Ollama
 
-# That's it - auto-discovers nodes, load balances, just works
-client = Ollama()
-response = client.chat("llama3.2", "Hello!")
-print(response)
+client = Ollama()  # Auto-discovers, just works
+response = client.chat("llama3.2", "Summarize quantum computing")
+```
+
+**Output shows full observability:**
+```
+🎯 Intelligent routing: Task: summarization (simple); Host localhost:11434
+✅ Request succeeded: localhost:11434 (latency: 3320ms, avg: 3320ms)
 ```
 
 **What just happened:**
-- ✅ Auto-discovered Ollama nodes (localhost + network scan) in <1 second
-- ✅ Created connection pool automatically
-- ✅ Load balanced your request across nodes
-- ✅ Zero configuration, zero setup
+- ✅ Auto-discovered Ollama nodes in <1 second
+- ✅ Analyzed request → detected "summarization" task
+- ✅ Intelligent routing with decision reasoning
+- ✅ Performance tracking (latency, success rate)
+- ✅ Learning from each request
+- ✅ **Full SynapticLlamas observability - automatically!**
 
-**Want the full power?** Keep reading to learn about GPU control, intelligent routing, and performance guarantees.
+**This isn't basic load balancing.** This is production-grade intelligent routing with complete observability, working out of the box.
 
 ---
 
