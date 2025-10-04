@@ -52,12 +52,23 @@ def discover_rpc_backends(
     Returns:
         List of discovered backends: [{"host": "ip", "port": 50052}, ...]
     """
+    backends = []
+
+    # ALWAYS check localhost first
+    logger.info(f"🔍 Checking localhost for RPC server on port {port}...")
+    if check_rpc_server('127.0.0.1', port, timeout):
+        logger.info(f"   ✅ Found RPC server: 127.0.0.1:{port}")
+        backends.append({"host": "127.0.0.1", "port": port})
+
+    # Then check network
     if cidr is None:
         # Auto-detect local network
         cidr = _detect_local_network()
         if not cidr:
-            logger.warning("Could not auto-detect network. Please specify CIDR.")
-            return []
+            logger.warning("Could not auto-detect network. Skipping network scan.")
+            if backends:
+                logger.info(f"✅ Discovered {len(backends)} RPC backends")
+            return backends
 
     logger.info(f"🔍 Scanning {cidr} for RPC servers on port {port}...")
 
@@ -65,7 +76,6 @@ def discover_rpc_backends(
     ips = _cidr_to_ips(cidr)
 
     # Scan in parallel
-    backends = []
     with ThreadPoolExecutor(max_workers=50) as executor:
         futures = {
             executor.submit(check_rpc_server, ip, port, timeout): ip
@@ -76,6 +86,9 @@ def discover_rpc_backends(
             ip = futures[future]
             try:
                 if future.result():
+                    # Skip localhost if already added
+                    if ip in ['127.0.0.1', 'localhost']:
+                        continue
                     logger.info(f"   ✅ Found RPC server: {ip}:{port}")
                     backends.append({"host": ip, "port": port})
             except Exception as e:
