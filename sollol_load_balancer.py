@@ -30,6 +30,7 @@ from sollol.prioritization import (
 )
 from sollol.adapters import PerformanceMemory, MetricsCollector
 from sollol.gpu_controller import SOLLOLGPUController, integrate_with_router
+from sollol.hedging import HedgingStrategy, AdaptiveHedging
 
 # Import existing SynapticLlamas modules
 from node_registry import NodeRegistry
@@ -61,13 +62,21 @@ class SOLLOLLoadBalancer:
     - Automatic failover with reasoning
     """
 
-    def __init__(self, registry: NodeRegistry, enable_gpu_control: bool = True):
+    def __init__(
+        self,
+        registry: NodeRegistry,
+        enable_gpu_control: bool = True,
+        enable_hedging: bool = False,
+        num_hedges: int = 2
+    ):
         """
         Initialize SOLLOL load balancer.
 
         Args:
             registry: Node registry for managing Ollama nodes
             enable_gpu_control: Enable active GPU controller integration
+            enable_hedging: Enable race-to-first hedging for low latency
+            num_hedges: Number of parallel requests when hedging (2-3 recommended)
         """
         self.registry = registry
 
@@ -84,6 +93,16 @@ class SOLLOLLoadBalancer:
             logger.info("🚀 GPU controller enabled - ensuring models run on GPU")
         else:
             logger.warning("⚠️  GPU controller disabled - routing may not optimize performance")
+
+        # Hedging strategy (for latency-critical requests)
+        self.hedging = None
+        self.adaptive_hedging = None
+        if enable_hedging:
+            self.hedging = HedgingStrategy(num_hedges=num_hedges)
+            self.adaptive_hedging = AdaptiveHedging(self.hedging)
+            logger.info(f"🏁 Hedging enabled - race-to-first with {num_hedges} parallel requests")
+        else:
+            logger.info("ℹ️  Hedging disabled - using single-node routing")
 
         logger.info("🚀 SOLLOL Load Balancer initialized with intelligent routing")
 
@@ -504,6 +523,105 @@ class SOLLOLLoadBalancer:
 
         self.gpu_controller.print_cluster_status()
 
+    def route_with_hedging(
+        self,
+        payload: Dict[str, Any],
+        agent_name: str = "Unknown",
+        priority: int = 5,
+        force_hedge: bool = False
+    ):
+        """
+        Route request with optional hedging (race-to-first).
+
+        Args:
+            payload: Request payload
+            agent_name: Agent name
+            priority: Priority level
+            force_hedge: Force hedging even if adaptive says no
+
+        Returns:
+            Result from winning node
+        """
+        if not self.hedging:
+            # Hedging not enabled, use normal routing
+            decision = self.route_request(payload, agent_name, priority)
+            return decision
+
+        # Analyze request for intelligent routing
+        context = self.intelligence.analyze_request(payload, priority)
+
+        # Get top N nodes for hedging
+        healthy_nodes = self.registry.get_healthy_nodes()
+        if len(healthy_nodes) < 2:
+            logger.warning("Not enough nodes for hedging, falling back to single-node")
+            decision = self.route_request(payload, agent_name, priority)
+            return decision
+
+        # Decide whether to hedge (adaptive or forced)
+        should_hedge = force_hedge or (
+            self.adaptive_hedging and
+            self.adaptive_hedging.should_hedge(
+                context,
+                estimated_latency_ms=context.estimated_duration_ms,
+                cluster_load=self._calculate_cluster_load()
+            )
+        )
+
+        if not should_hedge:
+            # Don't hedge, use normal routing
+            logger.debug("Adaptive hedging: not hedging this request")
+            decision = self.route_request(payload, agent_name, priority)
+            return decision
+
+        # Hedge!
+        logger.info(f"🏁 Hedging request across {self.hedging.num_hedges} nodes")
+
+        # Convert nodes to URLs
+        node_urls = [node.url for node in healthy_nodes[:self.hedging.num_hedges]]
+
+        # Create request function wrapper
+        def execute_on_node(node_url: str):
+            """Execute request on specific node."""
+            # TODO: Implement actual request execution
+            # For now, return mock response
+            import requests
+            response = requests.post(
+                f"{node_url}/api/embed",
+                json=payload,
+                timeout=30
+            )
+            return response.json()
+
+        # Execute hedged request
+        hedge_result = self.hedging.hedge_request(
+            nodes=node_urls,
+            request_fn=execute_on_node,
+            request_args={},
+            timeout_ms=30000
+        )
+
+        logger.info(
+            f"✅ Hedge winner: {hedge_result.winner_node} "
+            f"({hedge_result.latency_ms:.0f}ms, "
+            f"cancelled {len(hedge_result.cancelled_nodes)} slower requests)"
+        )
+
+        return hedge_result
+
+    def _calculate_cluster_load(self) -> float:
+        """
+        Calculate current cluster load (0-1).
+
+        Returns:
+            Average load across all healthy nodes
+        """
+        healthy_nodes = self.registry.get_healthy_nodes()
+        if not healthy_nodes:
+            return 1.0  # Fully loaded if no nodes
+
+        loads = [node.calculate_load_score() / 100.0 for node in healthy_nodes]
+        return sum(loads) / len(loads)
+
     def get_stats(self) -> Dict[str, Any]:
         """
         Get comprehensive statistics about routing and performance.
@@ -546,17 +664,22 @@ class SOLLOLLoadBalancer:
         if self.gpu_controller:
             stats['gpu'] = self.gpu_controller.get_placement_stats()
 
+        # Add hedging stats if enabled
+        if self.hedging:
+            stats['hedging'] = self.hedging.get_stats()
+
         return stats
 
     def __repr__(self):
         healthy = len(self.registry.get_healthy_nodes())
         gpu = len(self.registry.get_gpu_nodes())
         gpu_control = "enabled" if self.gpu_controller else "disabled"
+        hedging = "enabled" if self.hedging else "disabled"
         return (
             f"SOLLOLLoadBalancer("
             f"nodes={len(self.registry)}, healthy={healthy}, gpu={gpu}, "
             f"intelligent_routing=enabled, adaptive_learning=enabled, "
-            f"gpu_control={gpu_control})"
+            f"gpu_control={gpu_control}, hedging={hedging})"
         )
 
 
