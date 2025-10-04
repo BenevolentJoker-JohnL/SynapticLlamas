@@ -8,7 +8,10 @@ Simple one-line integration:
 """
 from typing import List, Dict, Optional, Any
 import httpx
+import logging
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
