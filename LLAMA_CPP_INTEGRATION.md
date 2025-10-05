@@ -2,7 +2,7 @@
 
 **FULLY INTEGRATED into SynapticLlamas** ✅
 
-SynapticLlamas now supports TRUE distributed inference using llama.cpp for large models (>70B parameters) that don't fit on a single GPU, while maintaining Ollama compatibility for smaller models.
+SynapticLlamas now supports layer-level model sharding using llama.cpp RPC for models that don't fit on a single GPU (verified with 13B models across 2-3 nodes), while maintaining Ollama compatibility for smaller models.
 
 ---
 
@@ -12,7 +12,7 @@ SynapticLlamas now supports TRUE distributed inference using llama.cpp for large
 - Automatic routing between Ollama (small models) and llama.cpp (large models)
 - GGUF auto-extraction from Ollama blob storage
 - On-demand coordinator creation
-- Support for ANY size model
+- Layer-level model sharding across RPC backends
 
 ### 2. **Main Application Integration** (`main.py`)
 - Full CLI support for distributed inference
@@ -30,6 +30,27 @@ SynapticLlamas now supports TRUE distributed inference using llama.cpp for large
 - Coordinator lifecycle tracking
 - RPC backend monitoring
 - WebSocket streaming of events
+
+---
+
+## ✅ What's Actually Tested
+
+**Verified working:**
+- ✅ 13B models across 2-3 RPC backends
+- ✅ GGUF extraction from Ollama blob storage
+- ✅ Automatic layer distribution visible in coordinator logs
+- ✅ Systemd RPC service management
+- ✅ Real-time dashboard monitoring
+- ✅ Auto-discovery of RPC backends
+
+**Should work (not extensively tested):**
+- ⚠️ 70B+ models across 4+ backends
+- ⚠️ Larger models with sufficient nodes
+
+**Performance characteristics:**
+- ⚠️ Startup time: 2-5 minutes for 13B (vs ~20s local)
+- ⚠️ Inference speed: ~5 tok/s distributed vs ~20 tok/s local
+- ⚠️ Worth it when model doesn't fit on single machine
 
 ---
 
@@ -158,7 +179,7 @@ else:
 ### 2. **GGUF Auto-Extraction**
 ```python
 # Pull model once with Ollama
-ollama pull llama3.1:405b
+ollama pull codellama:13b
 
 # SynapticLlamas automatically:
 # 1. Finds GGUF in ~/.ollama/models/blobs/
@@ -169,11 +190,11 @@ ollama pull llama3.1:405b
 ### 3. **Coordinator Lifecycle**
 ```python
 # On-demand coordinator creation per model
-if model == "llama3.1:405b":
+if model == "codellama:13b":
     # 1. Resolve GGUF from Ollama
     # 2. Start llama-server coordinator
     # 3. Connect RPC backends
-    # 4. Distribute model layers automatically
+    # 4. Distribute model layers automatically (e.g., 40 layers → ~13 per backend)
 ```
 
 ### 4. **Dashboard Monitoring**
@@ -240,7 +261,7 @@ GGML_RPC=ON make rpc-server
 **Option A: Auto-Discovery (Recommended)**
 ```bash
 # Pull model in Ollama
-ollama pull llama3.1:405b
+ollama pull codellama:13b
 
 # Start SynapticLlamas
 python3 main.py --distributed
@@ -275,17 +296,17 @@ SynapticLlamas> dashboard
 # Open browser: http://localhost:8080
 ```
 
-### 4. Run Large Model
+### 4. Run Distributed Model
 
 ```bash
-SynapticLlamas> Explain quantum computing using llama3.1:405b
+SynapticLlamas> Explain quantum computing using codellama:13b
 
 # Behind the scenes:
-# 1. HybridRouter detects model size (405B)
+# 1. HybridRouter detects distributed mode enabled
 # 2. Resolves GGUF from Ollama storage
 # 3. Starts coordinator with RPC backends
-# 4. Distributes model across workers
-# 5. Executes inference
+# 4. Distributes model layers across workers (~13 layers per backend)
+# 5. Executes inference (slower than local but enables larger-than-VRAM models)
 # 6. Returns result in Ollama format
 ```
 
@@ -300,7 +321,7 @@ The **llama.cpp Backend** tab shows:
 ```
 [10:30:45] [system] 🔌 Connected to llama.cpp monitoring
 [10:30:46] [coordinator] 🚀 llama.cpp coordinator started (port 8080)
-[10:30:47] [coordinator] 📦 Model loaded: llama3.1:405b
+[10:30:47] [coordinator] 📦 Model loaded: codellama:13b
 [10:30:48] [rpc_backend] 🔗 RPC backend connected: 192.168.1.10:50052
 [10:30:49] [rpc_backend] 🔗 RPC backend connected: 192.168.1.11:50052
 [10:31:00] [coordinator] ✓ Coordinator active (2 RPC backends)
@@ -310,11 +331,11 @@ The **llama.cpp Backend** tab shows:
 
 ```python
 # In application logs, you'll see:
-INFO - 🔍 Resolving GGUF path for Ollama model: llama3.1:405b
+INFO - 🔍 Resolving GGUF path for Ollama model: codellama:13b
 INFO - ✅ Found GGUF: /home/user/.ollama/models/blobs/sha256-abc123...
-INFO - 🚀 Starting llama.cpp coordinator for llama3.1:405b...
+INFO - 🚀 Starting llama.cpp coordinator for codellama:13b...
 INFO - ✅ Coordinator started with 2 RPC backends on 127.0.0.1:8080
-INFO - 🔗 Routing 'llama3.1:405b' to llama.cpp distributed cluster
+INFO - 🔗 Routing 'codellama:13b' to llama.cpp distributed cluster
 ```
 
 ### Status Check
@@ -358,11 +379,11 @@ All settings are automatically saved to `~/.synapticllamas.json`:
 
 | Model Size | Backend | Why |
 |------------|---------|-----|
-| ≤ 13B (llama3.2, phi3) | Ollama Pool | Fits on single GPU, fast |
-| 14B-70B (llama2:70b) | Ollama or llama.cpp | Depends on availability |
-| > 70B (llama3.1:405b) | llama.cpp Distributed | Required for large models |
+| ≤ 13B (llama3.2, phi3, codellama:13b) | Ollama Pool | Fits on single GPU, fast |
+| 14B-70B (llama2:70b) | Ollama or llama.cpp | Depends on availability and VRAM |
+| > 70B | llama.cpp Distributed | Required for models that don't fit on single GPU |
 
-**Automatic routing - no manual configuration needed!**
+**Note:** Automatic routing based on configuration - enable distributed mode to use RPC sharding.
 
 ---
 
@@ -378,7 +399,7 @@ SynapticLlamas> distributed on
 ### Issue: "Could not find GGUF for model"
 ```bash
 # Pull model in Ollama first
-ollama pull llama3.1:405b
+ollama pull codellama:13b
 
 # Then use in SynapticLlamas
 SynapticLlamas> Explain quantum computing
@@ -399,12 +420,12 @@ curl http://192.168.1.10:50052/health
 
 **llama.cpp distributed inference is FULLY INTEGRATED into SynapticLlamas!**
 
-✅ **Zero configuration** - Auto-discovers RPC backends on your network
-✅ **Works out of the box** - Just enable distributed inference
-✅ **Zero manual GGUF management** - Auto-extracts from Ollama
-✅ **Automatic routing** - Small → Ollama, Large → Distributed
-✅ **Full monitoring** - Dashboard with real-time logs
+✅ **Auto-discovery** - Scans network for RPC backends
+✅ **Works with tested models** - Verified with 13B across 2-3 nodes
+✅ **GGUF auto-extraction** - Extracts from Ollama storage
+✅ **Automatic routing** - Small → Ollama, Large → Distributed (when enabled)
+✅ **Full monitoring** - Dashboard with real-time coordinator logs
 ✅ **Persistent config** - Settings saved automatically
 ✅ **CLI + Interactive** - Both modes fully supported
 
-**You can now run ANY size model with the Ollama API - no manual setup!** 🚀
+**Enables running models that don't fit on a single GPU, with trade-offs in startup time and inference speed.** 🚀
