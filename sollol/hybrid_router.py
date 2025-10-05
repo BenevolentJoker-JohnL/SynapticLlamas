@@ -200,6 +200,7 @@ class HybridRouter:
         """
         import threading
         thread_id = threading.current_thread().ident
+        print(f"🔧 [Thread {thread_id}] _ensure_coordinator_for_model called for {model}", flush=True)
         logger.info(f"🔧 [Thread {thread_id}] _ensure_coordinator_for_model called for {model}")
 
         # Quick check without lock (optimization for common case)
@@ -209,12 +210,15 @@ class HybridRouter:
                 logger.info(f"✅ [Thread {thread_id}] Coordinator already running for {model}, reusing")
                 return
             else:
+                print(f"⚠️  [Thread {thread_id}] Coordinator process died (outside lock)! Will recreate.", flush=True)
                 logger.warning(f"⚠️  [Thread {thread_id}] Coordinator process died! Will recreate.")
                 self.coordinator = None
 
+        print(f"🔒 [Thread {thread_id}] Waiting for coordinator lock...", flush=True)
         logger.info(f"🔒 [Thread {thread_id}] Waiting for coordinator lock...")
         # Acquire lock for coordinator creation/modification
         async with self._coordinator_lock:
+            print(f"🔓 [Thread {thread_id}] Acquired coordinator lock", flush=True)
             logger.info(f"🔓 [Thread {thread_id}] Acquired coordinator lock")
             # Double-check after acquiring lock (another thread may have created it)
             if self.coordinator and self.coordinator_model == model:
@@ -223,6 +227,7 @@ class HybridRouter:
                     logger.info(f"✅ [Thread {thread_id}] Coordinator ready for {model} (created by another request)")
                     return
                 else:
+                    print(f"⚠️  [Thread {thread_id}] Coordinator process died (inside lock)! Will recreate.", flush=True)
                     logger.warning(f"⚠️  [Thread {thread_id}] Coordinator process died (inside lock)! Will recreate.")
                     self.coordinator = None
 
