@@ -198,20 +198,26 @@ class HybridRouter:
         Args:
             model: Ollama model name (e.g., "llama3.1:405b")
         """
+        import threading
+        thread_id = threading.current_thread().ident
+        logger.info(f"🔧 [Thread {thread_id}] _ensure_coordinator_for_model called for {model}")
+
         # Quick check without lock (optimization for common case)
         if self.coordinator and self.coordinator_model == model:
-            logger.debug(f"✅ Coordinator already running for {model}, reusing")
+            logger.info(f"✅ [Thread {thread_id}] Coordinator already running for {model}, reusing")
             return
 
+        logger.info(f"🔒 [Thread {thread_id}] Waiting for coordinator lock...")
         # Acquire lock for coordinator creation/modification
         async with self._coordinator_lock:
+            logger.info(f"🔓 [Thread {thread_id}] Acquired coordinator lock")
             # Double-check after acquiring lock (another thread may have created it)
             if self.coordinator and self.coordinator_model == model:
-                logger.debug(f"✅ Coordinator ready for {model} (created by another request)")
+                logger.info(f"✅ [Thread {thread_id}] Coordinator ready for {model} (created by another request)")
                 return
 
             # Resolve GGUF path from Ollama storage
-            logger.info(f"🔍 Resolving GGUF path for Ollama model: {model}")
+            logger.info(f"🔍 [Thread {thread_id}] Resolving GGUF path for Ollama model: {model}")
             gguf_path = self.gguf_resolver.resolve(model)
 
             if not gguf_path:
@@ -230,6 +236,7 @@ class HybridRouter:
 
             # Create coordinator if needed
             if not self.coordinator:
+                logger.info(f"🏗️ [Thread {thread_id}] Creating new coordinator for {model}")
                 # Convert dict configs to RPCBackend objects
                 backends = [
                     RPCBackend(
@@ -248,14 +255,14 @@ class HybridRouter:
                 )
 
                 # Start coordinator
-                logger.info(f"🚀 Starting llama.cpp coordinator for {model}...")
+                logger.info(f"🚀 [Thread {thread_id}] Starting llama.cpp coordinator for {model}...")
                 await self.coordinator.start()
 
                 # Track which model is loaded
                 self.coordinator_model = model
 
                 logger.info(
-                    f"✅ Coordinator started with {len(backends)} RPC backends "
+                    f"✅ [Thread {thread_id}] Coordinator started with {len(backends)} RPC backends "
                     f"on {self.coordinator_host}:{self.coordinator_port}"
                 )
 
