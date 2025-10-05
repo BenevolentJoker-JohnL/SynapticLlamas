@@ -38,11 +38,11 @@ response = client.chat("llama3.2", "Summarize quantum computing")
 
 **This isn't basic load balancing.** This is production-grade intelligent routing with complete observability, working out of the box.
 
-### 🚀 NEW: llama.cpp Distributed Inference - FULLY INTEGRATED
+### 🚀 NEW: llama.cpp Model Sharding - INTEGRATED
 
-**Run ANY size model with TRUE distributed inference!**
+**Run larger models across multiple machines.**
 
-SynapticLlamas now includes llama.cpp distributed inference support, allowing you to run models of ANY size (including 405B!) across consumer GPUs while maintaining the Ollama API.
+SynapticLlamas integrates llama.cpp RPC for layer-level model sharding, enabling inference on models that don't fit on a single GPU (verified with 13B models across 2-3 nodes).
 
 ```bash
 # Quick Start - CLI Mode
@@ -59,13 +59,18 @@ SynapticLlamas> dashboard  # Monitor everything!
 ```
 
 **What you get:**
-- ✅ **Automatic GGUF extraction** from Ollama storage (no manual file management!)
-- ✅ **Intelligent routing** - Small models → Ollama, Large models → llama.cpp distributed
-- ✅ **Real-time monitoring** - Dashboard with llama.cpp backend logs
-- ✅ **Zero-config setup** - Just add RPC backends and enable
-- ✅ **Persistent configuration** - Settings saved automatically
+- ✅ **GGUF extraction** from Ollama storage (no manual file management)
+- ✅ **Layer distribution** across RPC backends (automatic via llama-server)
+- ✅ **Real-time logs** showing which backend gets which layers
+- ✅ **Systemd service** for persistent RPC servers
+- ✅ **Configuration persistence** - Settings saved automatically
 
-📚 **[Full Integration Guide →](LLAMA_CPP_INTEGRATION.md)**
+**Trade-offs:**
+- ⚠️ Startup time: 2-5 minutes for 13B models (vs ~20s local)
+- ⚠️ Slower inference than local due to network overhead (~5 tok/s vs ~20 tok/s)
+- ⚠️ Worth it when model doesn't fit on single machine
+
+📚 **[Full Guide with Performance Data →](DISTRIBUTED_INFERENCE.md)**
 
 ### 🚀 ALSO: SOLLOL Gateway (Standalone)
 
@@ -92,29 +97,35 @@ curl http://localhost:11434/api/chat -d '...'  # Uses SOLLOL transparently
 ollama run llama3.2  # Works (set OLLAMA_HOST=http://localhost:11434)
 ```
 
-**Or use the Python SDK:**
+**Python SDK Example:**
 
 ```python
-from sollol import Ollama
+from sollol import HybridRouter, RPCBackend
 
-# Enable distributed inference - auto-discovers RPC servers!
-client = Ollama(enable_distributed=True)
+# Configure RPC backends
+router = HybridRouter(
+    rpc_backends=[
+        RPCBackend(host="10.9.66.154", port=50052),
+        RPCBackend(host="10.9.66.157", port=50052)
+    ],
+    enable_distributed=True
+)
 
-# Small models → Ollama (automatic)
-client.chat("llama3.2", "Hello!")
-
-# Large models → llama.cpp distributed (automatic)
-client.chat("llama3.1:405b", "Explain quantum computing")
+# Automatically shards model across backends
+response = await router.generate(
+    model="codellama:13b",
+    messages=[{"role": "user", "content": "Hello"}]
+)
 ```
 
-**What just happened:**
-- ✅ Small models routed to Ollama pool (fast, simple)
-- ✅ Large models routed to llama.cpp distributed cluster
-- ✅ Automatic selection based on model size
-- ✅ Same API for ANY size model
-- ✅ **The ONLY Ollama-compatible load balancer that actually works with 405B models**
+**What actually happens:**
+- ✅ GGUF extracted from Ollama storage
+- ✅ llama-server starts with --rpc backend1,backend2
+- ✅ Layers distributed automatically (shown in logs)
+- ✅ Inference coordinated across backends
+- ✅ Slower than local, but enables larger-than-VRAM models
 
-📚 **[Full Documentation →](DISTRIBUTED_INFERENCE.md)**
+📚 **[Performance Characteristics & Setup →](DISTRIBUTED_INFERENCE.md)**
 
 ---
 

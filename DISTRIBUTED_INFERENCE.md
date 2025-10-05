@@ -1,540 +1,308 @@
-# Distributed Inference: Run ANY Size Model with Ollama API
+# Distributed Inference with SOLLOL
 
-**The only Ollama-compatible load balancer with TRUE distributed inference.**
+**Layer-level model sharding for local LLM clusters.**
 
-SynapticLlamas combines Ollama's simplicity with llama.cpp's distributed inference to enable running models of ANY size across consumer hardware.
-
-## 🎯 Key Innovation: Automatic GGUF Resolution
-
-**No manual GGUF downloads needed!** SynapticLlamas automatically extracts GGUF files from Ollama's blob storage.
-
-- ✅ Pull model once with `ollama pull llama3.1:405b`
-- ✅ SynapticLlamas finds the GGUF automatically
-- ✅ Distributes it across your nodes transparently
-
-**No duplication. No manual paths. Just works.**
+SOLLOL combines Ollama's model management with llama.cpp's RPC protocol to enable running larger models across multiple consumer machines.
 
 ---
 
-## The Problem
+## What This Actually Does
 
-**Ollama doesn't support distributed inference across machines.**
+**Model sharding:** Splits a single model's layers across multiple RPC backend nodes, allowing inference on models that don't fit in a single machine's memory.
 
-- ❌ Can't split a single model across multiple nodes
-- ❌ Limited to models that fit on one GPU
-- ❌ 405B models impossible on consumer hardware
+**Verified working:**
+- ✅ 13B models across 2-3 nodes
+- ✅ Automatic layer distribution by llama-server
+- ✅ GGUF extraction from Ollama blob storage
+- ✅ Real-time log streaming showing distribution
 
-**Existing solutions (K2/olol, SOLLOL) claim this feature but don't deliver** - they just route between complete models, not split a single model.
+**Should work (not extensively tested):**
+- ⚠️ 70B models across 4+ nodes
+- ⚠️ Larger models (405B) with sufficient nodes
 
----
-
-## The Solution
-
-**SynapticLlamas bridges Ollama and llama.cpp for TRUE distributed inference:**
-
-```
-Small Models (≤ 13B)  →  Ollama Pool (fast, simple)
-Large Models (> 70B)  →  llama.cpp Distributed (auto-extracts GGUF from Ollama!)
-```
-
-**Result:** Run llama3.1:405b on 6x consumer GPUs with Ollama API!
+**Limitations:**
+- Startup time: 2-5 minutes for 13B, potentially longer for 70B+
+- Requires GGUF file in Ollama storage
+- Manual RPC server setup on each node
+- Slower than single-node inference due to network communication
 
 ---
 
-## Quick Start
+## The Problem SOLLOL Solves
 
-**Two ways to use SynapticLlamas:**
+**Ollama doesn't support splitting a model across machines.**
 
-### Option 1: SOLLOL Gateway (Recommended - Port 11434)
+If your model doesn't fit on one GPU, Ollama can't help. Options were:
+- Buy bigger GPU (expensive)
+- Use cloud (privacy/cost concerns)
+- Manual llama.cpp setup (complex)
 
-**SOLLOL IS your enhanced Ollama - just run it!**
-
-```bash
-# Start SOLLOL on port 11434 (the standard Ollama port)
-./start_gateway.sh
-
-# SOLLOL running on http://localhost:11434
-# ✅ Auto-discovers Ollama nodes on your network
-# ✅ Auto-discovers RPC backends for distributed inference
-# ✅ Your apps work unchanged!
-```
-
-**With distributed inference:**
-
-```bash
-# Start RPC servers on worker nodes
-# Node 1: rpc-server --host 0.0.0.0 --port 50052 --mem 2048
-# Node 2: rpc-server --host 0.0.0.0 --port 50052 --mem 2048
-
-# Start SOLLOL - auto-discovers RPC servers!
-./start_gateway.sh
-
-# Or manually specify backends:
-# ./start_gateway.sh 192.168.1.10:50052,192.168.1.11:50052
-```
-
-**How it works:**
-1. SOLLOL starts on port 11434 (Ollama's standard port)
-2. Auto-discovers Ollama nodes on network (excludes localhost)
-3. Auto-discovers RPC backends on port 50052
-4. Requests are automatically routed based on model size
-
-**Truly zero-config distributed inference!**
-
-**Make requests (unchanged from Ollama!):**
-
-```bash
-# Small model → Ollama pool
-curl -X POST http://localhost:11434/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"model": "llama3.2", "messages": [{"role": "user", "content": "Hello!"}]}'
-
-# Large model → Distributed (GGUF auto-extracted!)
-curl -X POST http://localhost:11434/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"model": "llama3.1:405b", "messages": [{"role": "user", "content": "Explain quantum computing"}]}'
-
-# Ollama CLI also works (point to SOLLOL)
-export OLLAMA_HOST=http://localhost:11434
-ollama run llama3.2  # Uses SOLLOL transparently!
-```
-
-### Option 2: Python SDK (For Custom Applications)
-
-```python
-from sollol import Ollama
-
-# Auto-discovers Ollama nodes, zero config
-client = Ollama()
-response = client.chat("llama3.2", "Hello!")
-```
-
-**What you get:**
-- ✅ Auto-discovery of Ollama nodes
-- ✅ Intelligent load balancing
-- ✅ Performance tracking
-- ✅ Works for models ≤ 70B
-
-### 2. With Distributed Inference (Large Models)
-
-```python
-from sollol import Ollama
-
-# Pull the model in Ollama ONCE (if not already pulled)
-# ollama pull llama3.1:405b
-
-# Enable distributed inference - GGUF auto-extracted from Ollama!
-client = Ollama(
-    enable_distributed=True,
-    rpc_nodes=[
-        {"host": "192.168.1.10", "port": 50052},  # RPC backend 1
-        {"host": "192.168.1.11", "port": 50052},  # RPC backend 2
-        # Add more nodes as needed
-    ]
-)
-
-# Small models → Ollama (automatic)
-response = client.chat("llama3.2", "Hello!")
-
-# Large models → llama.cpp distributed (automatic GGUF extraction!)
-response = client.chat("llama3.1:405b", "Explain quantum computing")
-```
-
-**What happens behind the scenes:**
-1. You request `llama3.1:405b`
-2. SynapticLlamas finds the GGUF in `~/.ollama/models/blobs/`
-3. Starts llama.cpp coordinator with that GGUF
-4. Distributes layers across RPC backends automatically
-5. Returns response in Ollama format
-
-**What you get:**
-- ✅ All benefits of basic usage
-- ✅ Automatic routing based on model size
-- ✅ Run 405B models on consumer hardware
-- ✅ Same Ollama API for everything
+**SOLLOL bridges Ollama and llama.cpp:**
+- Pull model once with `ollama pull codellama:13b`
+- SOLLOL extracts GGUF automatically
+- Distributes it across your existing hardware
 
 ---
 
-## Setup: llama.cpp RPC Servers
+## How It Works
 
-### Step 1: Pull Model in Ollama (Coordinator Node)
-
-On the machine running SynapticLlamas (coordinator):
-
-```bash
-# Pull the model once - SynapticLlamas will find the GGUF automatically!
-ollama pull llama3.1:405b
-
-# That's it! The GGUF is now in ~/.ollama/models/blobs/
-# SynapticLlamas will extract and use it automatically
+```
+User Query
+  ↓
+SOLLOL extracts GGUF from Ollama storage
+  ↓
+Starts llama-server with --rpc backend1,backend2,backend3
+  ↓
+llama-server distributes layers:
+  - Backend 1: Layers 0-13
+  - Backend 2: Layers 14-27
+  - Backend 3: Layers 28-40
+  ↓
+Inference across distributed backends
+  ↓
+Coordinator stops, backends remain ready
 ```
 
-### Step 2: Install llama.cpp on RPC Backend Nodes
+### Key Technologies
 
-On each worker node:
-
-```bash
-# Clone and build llama.cpp with RPC support
-git clone https://github.com/ggerganov/llama.cpp
-cd llama.cpp
-GGML_RPC=ON make rpc-server
-```
-
-### Step 3: Start RPC Server on Each Worker Node
-
-**Node 1 (192.168.1.10):**
-```bash
-./rpc-server \
-  --host 0.0.0.0 \
-  --port 50052 \
-  --mem 2048
-```
-
-**Node 2 (192.168.1.11):**
-```bash
-./rpc-server \
-  --host 0.0.0.0 \
-  --port 50052 \
-  --mem 2048
-```
-
-**Note:** RPC servers don't need the model file! The coordinator sends model data to them.
-
-### Step 4: Use with SynapticLlamas
-
-On the coordinator machine:
-
-```python
-from sollol import Ollama
-
-client = Ollama(
-    enable_distributed=True,
-    rpc_nodes=[
-        {"host": "192.168.1.10", "port": 50052},
-        {"host": "192.168.1.11", "port": 50052}
-    ]
-)
-
-# Automatically routes to distributed cluster (extracts GGUF from Ollama!)
-response = client.chat("llama3.1:405b", "Write a poem about AI")
-print(response)
-```
+- **Ollama**: Model management and GGUF storage
+- **llama.cpp RPC**: Layer distribution protocol
+- **llama-server**: Coordinator process
+- **SOLLOL**: Orchestration and monitoring
 
 ---
 
-## Architecture
+## Setup
 
-### Hybrid Routing System
+### 1. Install RPC Servers (Each Node)
 
-```
-┌─────────────────────────────────────────┐
-│      SynapticLlamas Hybrid Router        │
-│                                          │
-│  Analyzes model size:                    │
-│  - llama3.2 (3B) → Ollama               │
-│  - llama2:70b → Ollama                  │
-│  - llama3.1:405b → llama.cpp cluster    │
-└──────────────┬───────────────────────────┘
-               │
-    ┌──────────┴──────────────┐
-    │                         │
-    ▼                         ▼
-┌─────────────┐      ┌──────────────────┐
-│ Ollama Pool │      │ llama.cpp Cluster│
-│             │      │                  │
-│ Auto-disc.  │      │ Node 1: RPC      │
-│ Load bal.   │      │ Node 2: RPC      │
-│ Intelligent │      │ Node 3: RPC      │
-│ routing     │      │                  │
-│             │      │ Distributed      │
-│ Small models│      │ inference        │
-└─────────────┘      └──────────────────┘
+```bash
+# On each worker node, install systemd service
+cd SynapticLlamas/SOLLOL
+./scripts/install-rpc-service.sh
+
+# Verify running
+systemctl --user status sollol-rpc-server
 ```
 
-### Routing Logic
+### 2. Configure SynapticLlamas
 
-**Model Size Detection:**
-1. Analyzes model name (e.g., "405b" = 405 billion parameters)
-2. Estimates memory requirements
-3. Chooses backend automatically
+Edit `~/.synapticllamas.json`:
 
-**Decision Rules:**
-- **≤ 13B parameters** → Ollama pool (single node, fast)
-- **14B - 70B parameters** → Ollama pool (if fits), else llama.cpp
-- **> 70B parameters** → llama.cpp distributed cluster (required)
-
----
-
-## Model Support
-
-### Ollama-Compatible Models
-
-All standard Ollama models work:
-
-| Model | Size | Backend | Hardware Needed |
-|-------|------|---------|-----------------|
-| llama3.2 | 3B | Ollama | 1x 8GB GPU |
-| phi3 | 4B | Ollama | 1x 8GB GPU |
-| llama2:7b | 7B | Ollama | 1x 12GB GPU |
-| llama2:13b | 13B | Ollama | 1x 16GB GPU |
-| llama2:70b | 70B | Ollama/llama.cpp | 1x 80GB or 2x 24GB |
-| **llama3.1:405b** | **405B** | **llama.cpp** | **6x 24GB GPUs** |
-
-### Adding Custom Models
-
-Edit `sollol/hybrid_router.py`:
-
-```python
-MODEL_PROFILES = {
-    "your-model:size": ModelProfile(
-        name="your-model:size",
-        parameter_count=405,  # Billions
-        estimated_memory_gb=230.0,
-        requires_distributed=True,
-        num_layers=126
-    ),
+```json
+{
+  "model_sharding_enabled": true,
+  "task_distribution_enabled": false,
+  "rpc_backends": [
+    {"host": "10.9.66.154", "port": 50052},
+    {"host": "10.9.66.157", "port": 50052},
+    {"host": "10.9.66.45", "port": 50052}
+  ]
 }
 ```
 
-Edit `sollol/llama_cpp_rpc.py`:
+### 3. Pull Model with Ollama
 
-```python
-MODEL_PATH_MAP = {
-    "your-model:size": "models/your-model.gguf",
-}
+```bash
+# Pull model once - SOLLOL will extract GGUF
+ollama pull codellama:13b
+```
+
+### 4. Run SynapticLlamas
+
+```bash
+python3 main.py
+```
+
+Now queries automatically use distributed sharding:
+
+```
+SynapticLlamas> explain quantum computing
+
+🚀 Command: llama-server --model codellama:13b --rpc 10.9.66.154:50052,10.9.66.157:50052,10.9.66.45:50052
+   ⏳ Loading model across RPC backends...
+   📊 load_tensors: RPC0[10.9.66.154:50052] model buffer size = 2.3 GiB
+   📊 load_tensors: RPC1[10.9.66.157:50052] model buffer size = 2.3 GiB
+   📊 load_tensors: RPC2[10.9.66.45:50052] model buffer size = 2.3 GiB
+   ✅ Model loaded and ready
 ```
 
 ---
 
-## Performance
+## Performance Characteristics
 
-### Latency Characteristics
+### Startup Time
 
-| Setup | Model | Latency | Throughput |
-|-------|-------|---------|------------|
-| Single Ollama Node | llama3.2 (3B) | ~100ms | High |
-| Single Ollama Node | llama2:7b | ~200ms | High |
-| 2-Node llama.cpp | llama2:70b | ~500ms | Medium |
-| 6-Node llama.cpp | llama3.1:405b | ~2s | Low |
+**Model loading takes significantly longer than single-node:**
 
-**Trade-offs:**
-- ✅ Can run ANY size model (impossible otherwise)
-- ⚠️ ~20-30% latency overhead from distributed coordination
-- ⚠️ Requires all nodes to be healthy (single point of failure per model)
+| Model Size | Single Node | 2 Backends | 3 Backends |
+|-----------|-------------|------------|------------|
+| 13B | ~20s | ~40s | ~40s |
+| 70B | N/A (doesn't fit) | Estimated 5-10min | Estimated 5-10min |
 
-### Throughput Optimization
+**Why?** Each backend loads its layer slice sequentially, plus network coordination overhead.
 
-For high throughput with large models, run multiple clusters:
+### Inference Speed
 
-```python
-# Cluster 1: llama3.1:405b
-client1 = Ollama(
-    enable_distributed=True,
-    rpc_nodes=[nodes_1_3]  # Nodes 1-3
-)
+**Distributed inference is slower than local due to network latency:**
 
-# Cluster 2: llama3.1:405b
-client2 = Ollama(
-    enable_distributed=True,
-    rpc_nodes=[nodes_4_6]  # Nodes 4-6
-)
+| Setup | Tokens/sec (13B) |
+|-------|------------------|
+| Single RTX 3090 | ~20-30 |
+| 2x RPC backends (1Gbps) | ~5-10 |
+| 3x RPC backends (1Gbps) | ~5-10 |
 
-# Load balance between clusters
-```
-
----
-
-## What Makes This Special
-
-### vs. Standard Ollama
-
-| Feature | Ollama | SynapticLlamas |
-|---------|--------|----------------|
-| Load balancing | ❌ No | ✅ Intelligent |
-| Distributed inference | ❌ No | ✅ Yes |
-| Max model size | ~70B (1 GPU) | ♾️ Unlimited |
-| Auto-discovery | ❌ No | ✅ Yes |
-| Performance tracking | ❌ No | ✅ Yes |
-
-### vs. K2/olol (Competitors)
-
-| Feature | K2/olol | SynapticLlamas |
-|---------|---------|----------------|
-| Claimed distributed inference | ✅ Yes* | ✅ Yes |
-| **Actually works** | ❌ **No** | ✅ **YES** |
-| Ollama API compatible | ✅ Yes | ✅ Yes |
-| Intelligent routing | ❌ Basic | ✅ Advanced |
-
-*K2/olol documentation claims distributed inference but it doesn't work because Ollama doesn't support it. They're just routing between complete models.
-
-### The Key Difference
-
-**Everyone else:** Routes requests between Ollama instances (horizontal scaling only)
-
-**SynapticLlamas:**
-- Routes between Ollama instances (horizontal scaling)
-- PLUS routes to llama.cpp distributed cluster (vertical scaling)
-- PLUS intelligent routing based on task analysis
-
-**Result:** The ONLY system that can actually run 405B models with Ollama API!
+**When it's worth it:** When model doesn't fit on single machine at all. Slower inference is better than no inference.
 
 ---
 
 ## Troubleshooting
 
-### Issue: "No llama.cpp clusters available"
+### RPC Backend Shows "Offline" During Inference
 
-**Cause:** RPC nodes not configured or not reachable
+**This is normal!** RPC servers have tiny connection backlogs (~2). When coordinator connects, queue fills instantly. Health checks fail even though backend is working.
+
+**Solution:** Ignore "offline" status during active inference. It means backend is busy working.
+
+### Model Loading Takes Forever
+
+**Expected:** 2-5 minutes for 13B, potentially 5-10 minutes for 70B+.
+
+**Check:**
+1. All RPC servers running: `systemctl --user status sollol-rpc-server`
+2. Network connectivity: `nc -zv <host> 50052`
+3. Logs for errors: `journalctl --user -u sollol-rpc-server -f`
+
+### "GGUF not found" Error
+
+**Cause:** Model not in Ollama storage.
 
 **Solution:**
-```python
-# Verify RPC nodes are configured
-client = Ollama(
-    enable_distributed=True,  # Must be True
-    rpc_nodes=[                # Must provide nodes
-        {"host": "192.168.1.10", "port": 50052},
-        {"host": "192.168.1.11", "port": 50052}
-    ]
-)
+```bash
+ollama pull <model>  # Downloads and stores GGUF
 ```
 
-### Issue: "Cluster unhealthy nodes"
+SOLLOL looks in: `/usr/share/ollama/.ollama/models/blobs/`
 
-**Cause:** One or more RPC servers down
+### Poor Performance
 
-**Solution:**
-1. Check RPC servers are running: `curl http://192.168.1.10:50052/health`
-2. Check network connectivity: `ping 192.168.1.10`
-3. Check firewall: `telnet 192.168.1.10 50052`
-
-### Issue: Slow Performance
-
-**Causes:**
-- Network latency between nodes
-- Insufficient GPU memory (swapping to CPU)
-- Model quantization not optimal
-
-**Solutions:**
-1. Use 10GbE or faster network
-2. Ensure GPUs have adequate VRAM
-3. Use Q5_K_M or Q4_K_M quantization
-4. Enable flash attention: `--flash-attn`
+**Check:**
+1. Network speed (1Gbps minimum recommended)
+2. Backend machines not overloaded
+3. Consider single-node if model actually fits
 
 ---
 
-## Examples
+## Comparison: When to Use What
 
-### Example 1: Chatbot with Fallback
+### Use SOLLOL RPC Sharding When:
+- ✅ Model doesn't fit on single GPU
+- ✅ You have 2+ machines available
+- ✅ Network is fast (1Gbps+)
+- ✅ You can accept slower inference for access to larger models
 
-```python
-from sollol import Ollama
+### Use Standard Ollama When:
+- ✅ Model fits on single GPU
+- ✅ Speed is critical
+- ✅ Simple setup preferred
 
-# Prefer Ollama, fallback to distributed for large models
-client = Ollama(
-    enable_distributed=True,
-    rpc_nodes=[...]
-)
-
-def chat(user_message: str, model: str = "llama3.2"):
-    try:
-        response = client.chat(model, user_message)
-        return response
-    except Exception as e:
-        print(f"Error: {e}")
-        # Fallback to smaller model
-        return client.chat("llama3.2", user_message)
-```
-
-### Example 2: Multi-Model Pipeline
-
-```python
-from sollol import Ollama
-
-client = Ollama(enable_distributed=True, rpc_nodes=[...])
-
-# Fast summarization with small model
-summary = client.chat("llama3.2", f"Summarize: {long_text}")
-
-# Deep analysis with large model
-analysis = client.chat("llama3.1:405b", f"Analyze: {summary}")
-```
-
-### Example 3: Production Deployment
-
-```python
-import asyncio
-from sollol import Ollama
-
-class DistributedLLM:
-    def __init__(self):
-        self.small_client = Ollama()  # Ollama pool
-        self.large_client = Ollama(   # + Distributed
-            enable_distributed=True,
-            rpc_nodes=[...]
-        )
-
-    async def generate(self, prompt: str, size: str = "small"):
-        client = self.large_client if size == "large" else self.small_client
-        return client.chat(
-            "llama3.1:405b" if size == "large" else "llama3.2",
-            prompt
-        )
-
-# Use in production
-llm = DistributedLLM()
-result = await llm.generate("Complex query", size="large")
-```
+### Use Task Distribution (Ollama Pool) When:
+- ✅ Running multiple independent agent tasks in parallel
+- ✅ Each task is separate query
+- ✅ Want to max out cluster utilization
 
 ---
 
-## Roadmap
+## Configuration Modes
 
-### Current (v1.0)
+### Pure Model Sharding
 
-- ✅ llama.cpp RPC client
-- ✅ Hybrid routing (Ollama + llama.cpp)
-- ✅ Automatic model size detection
-- ✅ Basic distributed inference
+```json
+{
+  "model_sharding_enabled": true,
+  "task_distribution_enabled": false
+}
+```
 
-### Future (v1.1+)
+All queries → RPC sharding
 
-- ⏳ gRPC for faster inter-node communication
-- ⏳ Session affinity for multi-turn conversations
-- ⏳ Dynamic layer rebalancing based on load
-- ⏳ Automatic cluster creation on demand
-- ⏳ GPU memory profiling per node
-- ⏳ Streaming support for distributed inference
+### Pure Task Distribution
 
----
+```json
+{
+  "model_sharding_enabled": false,
+  "task_distribution_enabled": true
+}
+```
 
-## FAQ
+All queries → Ollama pool load balancing
 
-**Q: Does this really work?**
+### Hybrid (Both)
 
-A: YES! Unlike K2/olol and SOLLOL which claim this feature but don't deliver, SynapticLlamas actually implements it by bridging Ollama and llama.cpp.
+```json
+{
+  "model_sharding_enabled": true,
+  "task_distribution_enabled": true
+}
+```
 
-**Q: Do I need llama.cpp for small models?**
-
-A: No! Small models (≤ 13B) automatically use Ollama pool. You only need llama.cpp RPC servers for large models (> 70B).
-
-**Q: Can I mix Ollama and llama.cpp nodes?**
-
-A: Yes! That's exactly what SynapticLlamas does - intelligent routing between both backends.
-
-**Q: What's the performance overhead?**
-
-A: ~20-30% latency overhead for distributed inference due to inter-node communication. But it's worth it to run models impossible otherwise!
-
-**Q: Does streaming work?**
-
-A: Not yet for distributed inference. Streaming works for Ollama pool. Coming soon for llama.cpp.
+HybridRouter decides per-request (experimental)
 
 ---
 
-## Credits
+## Technical Details
 
-- **llama.cpp** - Distributed inference implementation
-- **Ollama** - Simple API and model management
-- **SynapticLlamas** - Hybrid routing and integration
+### Layer Distribution
 
-**This is the missing piece that makes Ollama complete.**
+llama-server automatically distributes layers across backends based on available memory. SOLLOL doesn't control the split - it's handled by llama.cpp internally.
+
+**Example 13B model (40 layers) on 3 backends:**
+- Backend 1: ~13 layers
+- Backend 2: ~13 layers
+- Backend 3: ~14 layers
+
+### Network Requirements
+
+**Minimum:** 1Gbps Ethernet
+**Recommended:** 10Gbps for 70B+ models
+
+RPC protocol sends activations between layers. More layers = more network traffic.
+
+### GGUF Extraction
+
+SOLLOL extracts GGUF from Ollama's blob storage:
+1. Query Ollama API for model manifest
+2. Find blob hash for model layers
+3. Read GGUF from `/usr/share/ollama/.ollama/models/blobs/sha256-<hash>`
+
+No duplication. No manual downloads.
+
+---
+
+## Future Improvements
+
+Prioritized list:
+
+1. **Automatic model-size routing** - Route <13B to Ollama, ≥13B to RPC
+2. **Persistent coordinators** - Keep coordinator running for repeated queries
+3. **Memory-aware backend selection** - Use backends with most free VRAM
+4. **Performance benchmarks** - Document actual speed vs model size
+5. **Better error messages** - User-friendly troubleshooting guidance
+
+---
+
+## Contributing
+
+Help wanted:
+- Testing with 70B+ models on real hardware
+- Performance benchmarking across different network speeds
+- Documentation improvements based on actual usage
+- Bug reports with specific error messages and logs
+
+---
+
+## Acknowledgments
+
+- **llama.cpp**: RPC protocol and coordinator
+- **Ollama**: Model management and GGUF storage
+- **Community**: Testing and feedback
