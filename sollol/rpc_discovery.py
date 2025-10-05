@@ -54,11 +54,12 @@ def discover_rpc_backends(
     """
     backends = []
 
-    # ALWAYS check localhost first
-    logger.info(f"🔍 Checking localhost for RPC server on port {port}...")
-    if check_rpc_server('127.0.0.1', port, timeout):
-        logger.info(f"   ✅ Found RPC server: 127.0.0.1:{port}")
-        backends.append({"host": "127.0.0.1", "port": port})
+    # Skip localhost check - rely on network scan to find local machine
+    # (prevents duplicate entries if local machine has a network IP)
+    # logger.info(f"🔍 Checking localhost for RPC server on port {port}...")
+    # if check_rpc_server('127.0.0.1', port, timeout):
+    #     logger.info(f"   ✅ Found RPC server: 127.0.0.1:{port}")
+    #     backends.append({"host": "127.0.0.1", "port": port})
 
     # Then check network
     if cidr is None:
