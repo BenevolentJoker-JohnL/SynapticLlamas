@@ -35,7 +35,8 @@ class DistributedOrchestrator:
     """
 
     def __init__(self, registry: NodeRegistry = None, use_sollol: bool = True, use_flockparser: bool = False,
-                 enable_distributed_inference: bool = False, rpc_backends: list = None):
+                 enable_distributed_inference: bool = False, rpc_backends: list = None,
+                 task_distribution_enabled: bool = True):
         """
         Initialize distributed orchestrator with SOLLOL.
 
@@ -45,6 +46,7 @@ class DistributedOrchestrator:
             use_flockparser: Enable FlockParser RAG enhancement (default: False)
             enable_distributed_inference: Enable llama.cpp distributed inference (default: False)
             rpc_backends: List of RPC backend configs for distributed inference
+            task_distribution_enabled: Enable Ollama task distribution (default: True)
         """
         self.registry = registry or NodeRegistry()
 
@@ -62,25 +64,39 @@ class DistributedOrchestrator:
 
         # Initialize HybridRouter for distributed inference with llama.cpp
         self.hybrid_router = None
+        self.hybrid_router_sync = None
         self.enable_distributed_inference = enable_distributed_inference
+        self.task_distribution_enabled = task_distribution_enabled
+
         if enable_distributed_inference:
             try:
                 from sollol.hybrid_router import HybridRouter
                 from sollol.pool import OllamaPool
+                from hybrid_router_sync import HybridRouterSync
 
-                # Create OllamaPool from existing registry nodes
-                ollama_nodes = [{"host": node.url.replace("http://", "").split(":")[0],
-                                "port": node.url.split(":")[-1]}
-                               for node in self.registry.nodes.values()]
-                ollama_pool = OllamaPool(nodes=ollama_nodes if ollama_nodes else None)
+                # Only create OllamaPool if task distribution is enabled
+                ollama_pool = None
+                if task_distribution_enabled:
+                    # Create OllamaPool from existing registry nodes
+                    ollama_nodes = [{"host": node.url.replace("http://", "").split(":")[0],
+                                    "port": node.url.split(":")[-1]}
+                                   for node in self.registry.nodes.values()]
+                    ollama_pool = OllamaPool(nodes=ollama_nodes if ollama_nodes else None)
+                    logger.info(f"✅ Task distribution enabled: Ollama pool with {len(ollama_nodes)} nodes")
+                else:
+                    logger.info("⏭️  Task distribution disabled: Using only RPC model sharding")
 
                 # Create hybrid router
                 self.hybrid_router = HybridRouter(
-                    ollama_pool=ollama_pool,
+                    ollama_pool=ollama_pool,  # None if task distribution disabled
                     rpc_backends=rpc_backends,
                     enable_distributed=True
                 )
-                logger.info(f"🔗 llama.cpp distributed inference enabled with {len(rpc_backends) if rpc_backends else 0} RPC backends")
+
+                # Create sync wrapper for agents
+                self.hybrid_router_sync = HybridRouterSync(self.hybrid_router)
+
+                logger.info(f"🔗 llama.cpp model sharding enabled with {len(rpc_backends) if rpc_backends else 0} RPC backends")
             except Exception as e:
                 logger.error(f"Failed to initialize HybridRouter: {e}")
                 self.enable_distributed_inference = False
@@ -347,6 +363,7 @@ class DistributedOrchestrator:
         if self.use_sollol:
             for agent in agents:
                 agent._load_balancer = self.load_balancer
+                agent._hybrid_router_sync = self.hybrid_router_sync  # Enable Ollama/RPC routing
                 logger.debug(f"✅ SOLLOL injected into {agent.name}")
 
         # Select strategy
@@ -407,6 +424,7 @@ class DistributedOrchestrator:
         if self.use_sollol:
             for agent in agents:
                 agent._load_balancer = self.load_balancer
+                agent._hybrid_router_sync = self.hybrid_router_sync
         else:
             # Set agents to use this specific node
             for agent in agents:
@@ -843,6 +861,7 @@ class DistributedOrchestrator:
 
         # Inject SOLLOL load balancer
         agent._load_balancer = self.load_balancer
+        agent._hybrid_router_sync = self.hybrid_router_sync
 
         return agent
 
@@ -1076,8 +1095,9 @@ Output JSON with 'context' field containing your detailed explanation as a conti
             else:
                 agent = Researcher(model=model, timeout=300)
 
-            agent.ollama_url = node_url
-            agent._load_balancer = None
+            # Inject HybridRouter for intelligent Ollama/RPC routing
+            agent._hybrid_router_sync = self.hybrid_router_sync
+            agent._load_balancer = None  # Disable load balancer, use HybridRouter instead
             return agent.process(task.payload['prompt'])
 
         initial_result = self.parallel_executor.execute_parallel(
@@ -1198,8 +1218,9 @@ Respond with JSON containing a 'story' field with the complete narrative."""
             else:
                 agent = Editor(model=model, timeout=600)
 
-            agent.ollama_url = node_url
-            agent._load_balancer = None
+            # Inject HybridRouter for intelligent Ollama/RPC routing
+            agent._hybrid_router_sync = self.hybrid_router_sync
+            agent._load_balancer = None  # Disable load balancer, use HybridRouter instead
             return agent.process(task.payload['prompt'])
 
         synthesis_result = self.parallel_executor.execute_parallel(
@@ -1313,6 +1334,10 @@ Output JSON with 'context' field containing your detailed explanation as a conti
             else:
                 agent = Researcher(model=model, timeout=300)
 
+            # Inject HybridRouter for intelligent Ollama/RPC routing
+            agent._hybrid_router_sync = self.hybrid_router_sync
+            agent._load_balancer = self.load_balancer if self.use_sollol else None
+
             chunk_start = time.time()
             chunk_content = agent.process(prompt)
             chunk_duration = (time.time() - chunk_start) * 1000
@@ -1334,6 +1359,10 @@ Output JSON with 'context' field containing your detailed explanation as a conti
             editor = Storyteller(model=model, timeout=600)
         else:
             editor = Editor(model=model, timeout=600)
+
+        # Inject HybridRouter for intelligent Ollama/RPC routing
+        editor._hybrid_router_sync = self.hybrid_router_sync
+        editor._load_balancer = self.load_balancer if self.use_sollol else None
 
         final_content = editor.process(
             f"Synthesize into cohesive {content_type.value}:\n\n{accumulated_content}"

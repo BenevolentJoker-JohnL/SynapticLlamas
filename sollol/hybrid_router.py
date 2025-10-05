@@ -1,9 +1,18 @@
 """
-Hybrid Router: Intelligent Selection Between Ollama and llama.cpp
+Hybrid Router: Intelligent Selection Between Task Distribution and Model Sharding
 
-Routes requests to either:
-- Ollama nodes (for small/medium models that fit on single GPU)
-- llama.cpp distributed cluster (for large models requiring multiple nodes)
+TWO INDEPENDENT ROUTING MODES (can be used together):
+1. Task Distribution (Ollama Pool):
+   - Load balance agent requests across Ollama nodes (parallel execution)
+   - For small/medium models that fit on single GPU (≤13B)
+   - Multiple agents run in parallel on different nodes
+
+2. Model Sharding (llama.cpp RPC):
+   - Distribute a single large model across multiple RPC backends
+   - For large models requiring multiple nodes (70B+)
+   - Single model split across nodes via llama.cpp
+
+💡 Both modes can be enabled simultaneously for optimal performance!
 
 This enables seamless support for models of ANY size while maintaining
 Ollama's simple API.
@@ -16,6 +25,7 @@ from dataclasses import dataclass
 from .pool import OllamaPool
 from .llama_cpp_coordinator import LlamaCppCoordinator, RPCBackend
 from .ollama_gguf_resolver import OllamaGGUFResolver
+from .rpc_registry import RPCBackendRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +53,7 @@ MODEL_PROFILES = {
     "mistral:7b": ModelProfile("mistral:7b", 7, 5.0, False, 32),
     "llama2:7b": ModelProfile("llama2:7b", 7, 5.0, False, 32),
     "llama2:13b": ModelProfile("llama2:13b", 13, 9.0, False, 40),
+    "codellama:13b": ModelProfile("codellama:13b", 13, 7.4, True, 40),  # Force distributed for testing
 
     # Medium models (might fit on large single GPU)
     "llama2:70b": ModelProfile("llama2:70b", 70, 40.0, True, 80),
@@ -59,13 +70,19 @@ MODEL_PROFILES = {
 
 class HybridRouter:
     """
-    Routes requests between Ollama and llama.cpp based on model requirements.
+    Routes requests between Task Distribution (Ollama pool) and Model Sharding (llama.cpp).
+
+    TWO INDEPENDENT ROUTING MODES (can both be enabled):
+    - Task Distribution: Ollama pool load balances agent requests across nodes (parallel execution)
+    - Model Sharding: llama.cpp distributes model layers across RPC backends (single model split)
+
+    💡 When both are enabled, routing is automatic based on model size!
 
     Decision logic:
-    1. Small models (<= 13B) → Ollama (single node)
-    2. Medium models (14B-70B) → Ollama if available, else llama.cpp
-    3. Large models (> 70B) → llama.cpp distributed cluster
-    4. Unknown models → Estimate from name, fallback to Ollama
+    1. Small models (<= 13B) → Ollama pool (task distribution / load balancing)
+    2. Medium models (14B-70B) → Ollama if available, else llama.cpp model sharding
+    3. Large models (> 70B) → llama.cpp model sharding across RPC backends
+    4. Unknown models → Estimate from name, default to Ollama pool
     """
 
     def __init__(
@@ -77,7 +94,8 @@ class HybridRouter:
         enable_distributed: bool = True,
         auto_discover_rpc: bool = True,
         auto_setup_rpc: bool = False,
-        num_rpc_backends: int = 1
+        num_rpc_backends: int = 1,
+        auto_fallback: bool = True
     ):
         """
         Initialize hybrid router with automatic GGUF resolution from Ollama.
@@ -92,8 +110,13 @@ class HybridRouter:
             auto_discover_rpc: Auto-discover RPC backends if none provided
             auto_setup_rpc: Auto-setup RPC backends if none found (requires llama.cpp)
             num_rpc_backends: Number of RPC backends to start if auto-setup is enabled
+            auto_fallback: Automatically fallback to RPC if Ollama fails (default: True)
         """
         self.ollama_pool = ollama_pool
+        self.auto_fallback = auto_fallback
+
+        # Cache for routing decisions (model -> use_rpc)
+        self.routing_cache = {}
 
         # Auto-discover RPC backends if none provided
         if rpc_backends is None and enable_distributed and auto_discover_rpc:
@@ -131,6 +154,12 @@ class HybridRouter:
         self.coordinator_host = coordinator_host
         self.coordinator_port = coordinator_port
 
+        # Create RPC backend registry for intelligent backend selection and monitoring
+        self.rpc_registry = RPCBackendRegistry()
+        if rpc_backends:
+            self.rpc_registry.load_from_config(rpc_backends)
+            logger.info(f"Loaded {len(rpc_backends)} RPC backends into registry")
+
         # Coordinator created on-demand when first large model request arrives
         self.coordinator: Optional[LlamaCppCoordinator] = None
         self.coordinator_model: Optional[str] = None  # Track which model is loaded
@@ -145,8 +174,8 @@ class HybridRouter:
 
         logger.info(
             f"HybridRouter initialized: "
-            f"Ollama={'enabled' if ollama_pool else 'disabled'}, "
-            f"Distributed={'enabled' if self.enable_distributed else 'disabled'}"
+            f"Task Distribution (Ollama pool)={'enabled' if ollama_pool else 'disabled'}, "
+            f"Model Sharding (llama.cpp)={'enabled' if self.enable_distributed else 'disabled'}"
             f"{rpc_info}"
         )
 
@@ -218,13 +247,13 @@ class HybridRouter:
 
     def should_use_distributed(self, model: str) -> bool:
         """
-        Determine if model should use distributed inference.
+        Determine if model should use model sharding (llama.cpp RPC distribution).
 
         Args:
             model: Model name
 
         Returns:
-            True if should use llama.cpp distributed
+            True if should use llama.cpp model sharding (False = use Ollama task distribution)
         """
         if not self.enable_distributed:
             return False
@@ -232,15 +261,15 @@ class HybridRouter:
         # Get model profile
         profile = self._get_model_profile(model)
 
-        # Decision rules
+        # Decision rules for routing
         if profile.parameter_count <= 13:
-            # Small models: always use Ollama
+            # Small models: use Ollama pool (task distribution / load balancing)
             return False
         elif profile.parameter_count <= 70:
-            # Medium models: prefer Ollama, use distributed if marked required
+            # Medium models: prefer Ollama pool, use model sharding if marked required
             return profile.requires_distributed
         else:
-            # Large models: must use distributed
+            # Large models: must use model sharding (llama.cpp RPC distribution)
             return True
 
     def _get_model_profile(self, model: str) -> ModelProfile:
@@ -288,12 +317,12 @@ class HybridRouter:
         # Estimate memory (rough: ~600MB per billion parameters)
         estimated_memory = param_count * 0.6
 
-        # Requires distributed if > 70B
+        # Requires model sharding if > 70B
         requires_distributed = param_count > 70
 
         logger.info(
             f"Estimated profile for '{model}': {param_count}B params, "
-            f"~{estimated_memory:.1f}GB, distributed={requires_distributed}"
+            f"~{estimated_memory:.1f}GB, model_sharding={requires_distributed}"
         )
 
         return ModelProfile(
@@ -311,7 +340,14 @@ class HybridRouter:
         **kwargs
     ) -> Dict[str, Any]:
         """
-        Route request to appropriate backend.
+        Route request to appropriate backend with intelligent fallback.
+
+        Routing logic:
+        1. Check cached routing decision for this model
+        2. If no cache:
+           a. Try Ollama pool first
+           b. If Ollama fails (OOM/timeout/error) AND auto_fallback enabled → try RPC
+           c. Cache successful routing decision
 
         Args:
             model: Model name
@@ -321,16 +357,61 @@ class HybridRouter:
         Returns:
             Response from either Ollama or llama.cpp
         """
-        use_distributed = self.should_use_distributed(model)
+        # Check if we have a cached routing decision
+        if model in self.routing_cache:
+            use_rpc = self.routing_cache[model]
+            if use_rpc:
+                logger.info(f"🔗 Routing '{model}' to RPC (cached decision)")
+                return await self._route_to_llamacpp(model, messages, **kwargs)
+            else:
+                logger.info(f"📡 Routing '{model}' to Ollama (cached decision)")
+                return await self._route_to_ollama(model, messages, **kwargs)
 
-        if use_distributed:
-            # Route to llama.cpp distributed cluster
-            logger.info(f"🔗 Routing '{model}' to llama.cpp distributed cluster")
-            return await self._route_to_llamacpp(model, messages, **kwargs)
-        else:
-            # Route to Ollama
-            logger.info(f"📡 Routing '{model}' to Ollama pool")
-            return await self._route_to_ollama(model, messages, **kwargs)
+        # No cached decision - check resources proactively
+        if self.ollama_pool:
+            # Proactive resource check to avoid OOM
+            can_fit_on_ollama = await self._check_if_model_fits_ollama(model)
+
+            if can_fit_on_ollama:
+                # Resources sufficient - try Ollama
+                try:
+                    logger.info(f"📡 Routing '{model}' to Ollama pool (sufficient resources)")
+                    result = await self._route_to_ollama(model, messages, **kwargs)
+                    # Success! Cache this decision
+                    self.routing_cache[model] = False
+                    return result
+                except Exception as e:
+                    # Unexpected error - try RPC fallback if enabled
+                    if self.auto_fallback and self.enable_distributed:
+                        logger.warning(f"⚠️  Ollama failed unexpectedly for '{model}': {str(e)[:100]}")
+                        logger.info(f"🔗 Falling back to RPC model sharding...")
+                        result = await self._route_to_llamacpp(model, messages, **kwargs)
+                        self.routing_cache[model] = True
+                        return result
+                    else:
+                        raise
+            else:
+                # Insufficient resources - use RPC if available
+                if self.enable_distributed:
+                    logger.info(f"🔗 Routing '{model}' to RPC (insufficient Ollama resources)")
+                    result = await self._route_to_llamacpp(model, messages, **kwargs)
+                    self.routing_cache[model] = True
+                    return result
+                else:
+                    # No RPC available - try Ollama anyway (may fail)
+                    logger.warning(f"⚠️  '{model}' may not fit on Ollama nodes, but no RPC available")
+                    result = await self._route_to_ollama(model, messages, **kwargs)
+                    self.routing_cache[model] = False
+                    return result
+
+        # No Ollama pool available - use RPC directly
+        if self.enable_distributed:
+            logger.info(f"🔗 Routing '{model}' to RPC (no Ollama pool)")
+            result = await self._route_to_llamacpp(model, messages, **kwargs)
+            self.routing_cache[model] = True
+            return result
+
+        raise RuntimeError("No backends available for routing")
 
     async def _route_to_ollama(
         self,
@@ -338,7 +419,7 @@ class HybridRouter:
         messages: List[Dict[str, str]],
         **kwargs
     ) -> Dict[str, Any]:
-        """Route to Ollama pool."""
+        """Route to Ollama pool for task distribution (load balancing)."""
         if not self.ollama_pool:
             raise RuntimeError("Ollama pool not available")
 
@@ -363,12 +444,13 @@ class HybridRouter:
         **kwargs
     ) -> Dict[str, Any]:
         """
-        Route to llama.cpp distributed coordinator.
+        Route to llama.cpp for model sharding (distribute layers across RPC backends).
 
         This method automatically:
         1. Resolves the GGUF from Ollama's blob storage
         2. Starts the coordinator with the correct model
-        3. Makes the inference request
+        3. Distributes model layers across RPC backends
+        4. Makes the inference request
         """
         # Ensure coordinator is started with correct model (auto-resolves GGUF!)
         await self._ensure_coordinator_for_model(model)
@@ -407,21 +489,74 @@ class HybridRouter:
             },
             'done': True,
             '_routing': {
-                'backend': 'llama.cpp-distributed',
+                'mode': 'model_sharding',
+                'backend': 'llama.cpp-rpc',
                 'coordinator': f"{self.coordinator.host}:{self.coordinator.port}",
-                'rpc_backends': len(self.coordinator.rpc_backends)
+                'rpc_backends': len(self.coordinator.rpc_backends),
+                'description': 'Model layers distributed across RPC backends'
             }
         }
 
+    async def _check_if_model_fits_ollama(self, model: str) -> bool:
+        """
+        Check if model can fit on Ollama nodes by comparing estimated model size
+        to available system resources.
+
+        Args:
+            model: Model name
+
+        Returns:
+            True if model likely fits on at least one Ollama node
+        """
+        if not self.ollama_pool:
+            return False
+
+        # Get model size estimate
+        profile = self._get_model_profile(model)
+        estimated_gb = profile.estimated_memory_gb
+
+        # Add safety margin (models often use more memory than parameter count suggests)
+        # Account for context, KV cache, etc.
+        required_gb = estimated_gb * 1.5  # 50% safety margin
+
+        logger.info(f"📊 Model '{model}' estimated size: {estimated_gb:.1f}GB (with margin: {required_gb:.1f}GB)")
+
+        # Check if any Ollama node has sufficient memory
+        # Heuristic for routing:
+        # - Models < 8GB: Small enough for Ollama task distribution
+        # - Models >= 8GB: Use RPC sharding for better resource utilization
+
+        if required_gb >= 8:
+            logger.info(f"🔗 Model size ({required_gb:.1f}GB) - using RPC sharding")
+            return False
+        else:
+            logger.info(f"✅ Model small enough ({required_gb:.1f}GB) - using Ollama")
+            return True
+
     def get_stats(self) -> Dict[str, Any]:
-        """Get routing statistics."""
+        """Get routing statistics for both distribution modes."""
         stats = {
-            'ollama_enabled': self.ollama_pool is not None,
-            'distributed_enabled': self.enable_distributed,
-            'llamacpp_clusters': len(self.llamacpp_clusters)
+            'task_distribution': {
+                'enabled': self.ollama_pool is not None,
+                'description': 'Load balance agent requests across Ollama nodes'
+            },
+            'model_sharding': {
+                'enabled': self.enable_distributed,
+                'description': 'Distribute large models across llama.cpp RPC backends'
+            },
+            'routing_cache': {
+                'cached_models': len(self.routing_cache),
+                'ollama_models': [m for m, use_rpc in self.routing_cache.items() if not use_rpc],
+                'rpc_models': [m for m, use_rpc in self.routing_cache.items() if use_rpc]
+            }
         }
 
         if self.ollama_pool:
-            stats['ollama_stats'] = self.ollama_pool.get_stats()
+            stats['task_distribution']['ollama_stats'] = self.ollama_pool.get_stats()
+
+        if self.coordinator:
+            stats['model_sharding']['coordinator_active'] = True
+            stats['model_sharding']['model_loaded'] = self.coordinator_model
+            stats['model_sharding']['rpc_backends'] = len(self.coordinator.rpc_backends)
 
         return stats

@@ -104,9 +104,26 @@ class LlamaCppCoordinator:
         # Build RPC backend address list
         rpc_addresses = ",".join([backend.address for backend in self.rpc_backends])
 
-        # Build llama-server command
+        # Build llama-server command (use full path or check PATH)
+        import shutil
+        import os
+        llama_server_cmd = os.environ.get("LLAMA_SERVER_PATH", "llama-server")
+
+        # Try common paths if not in environment
+        if llama_server_cmd == "llama-server" and not shutil.which("llama-server"):
+            possible_paths = [
+                "/home/joker/llama.cpp/build/bin/llama-server",
+                os.path.expanduser("~/llama.cpp/build/bin/llama-server"),
+                "/usr/local/bin/llama-server",
+                "/usr/bin/llama-server"
+            ]
+            for path in possible_paths:
+                if os.path.exists(path):
+                    llama_server_cmd = path
+                    break
+
         cmd = [
-            "llama-server",
+            llama_server_cmd,
             "--model", self.model_path,
             "--host", self.host,
             "--port", str(self.port),
@@ -116,16 +133,29 @@ class LlamaCppCoordinator:
         ]
 
         logger.info(f"Starting llama-server coordinator: {' '.join(cmd)}")
+        print(f"🚀 Command: {' '.join(cmd)}")  # Also print to stdout
 
         try:
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout for unified streaming
+                text=True,
+                bufsize=1  # Line-buffered
             )
 
-            # Wait for server to be ready
+            # Give process a moment to start
+            await asyncio.sleep(1.0)
+
+            # Check if process crashed immediately
+            if self.process.poll() is not None:
+                # Process exited
+                stdout, _ = self.process.communicate()
+                error_msg = f"llama-server exited immediately (code {self.process.returncode})\nLOGS:\n{stdout}"
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+
+            # Wait for server to be ready and stream important logs
             await self._wait_for_ready()
 
             logger.info(
@@ -137,9 +167,34 @@ class LlamaCppCoordinator:
             logger.error(f"Failed to start llama-server: {e}")
             raise
 
-    async def _wait_for_ready(self, timeout: float = 30.0):
-        """Wait for llama-server to be ready."""
+    async def _wait_for_ready(self, timeout: float = 300.0):
+        """Wait for llama-server to be ready (5 minutes for multi-backend model loading)."""
         start_time = asyncio.get_event_loop().time()
+        loading_detected = False
+
+        # Stream coordinator logs while waiting
+        import threading
+        def stream_logs():
+            """Stream coordinator logs in background thread."""
+            if not self.process or not self.process.stdout:
+                return
+
+            for line in iter(self.process.stdout.readline, ''):
+                if not line:
+                    break
+                line = line.rstrip()
+
+                # Filter for important RPC distribution logs
+                if any(keyword in line for keyword in [
+                    'RPC', 'model buffer size', 'offloading', 'layers to GPU',
+                    'KV buffer size', 'load_tensors', 'using device'
+                ]):
+                    print(f"   📊 {line}")
+                    logger.info(f"Coordinator: {line}")
+
+        # Start log streaming thread
+        log_thread = threading.Thread(target=stream_logs, daemon=True)
+        log_thread.start()
 
         while True:
             try:
@@ -147,14 +202,24 @@ class LlamaCppCoordinator:
                     f"http://{self.host}:{self.port}/health"
                 )
                 if response.status_code == 200:
+                    logger.info("llama-server is ready")
+                    print("   ✅ Model loaded and ready")
                     return
-            except:
+                elif response.status_code == 503:
+                    # Server is loading model
+                    if not loading_detected:
+                        logger.info("llama-server is loading model...")
+                        print("   ⏳ Loading model across RPC backends...")
+                        loading_detected = True
+                    # Continue waiting
+            except Exception as e:
+                # Server not responding yet
                 pass
 
             if asyncio.get_event_loop().time() - start_time > timeout:
-                raise TimeoutError("llama-server did not start in time")
+                raise TimeoutError(f"llama-server did not start in time ({timeout}s)")
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(2.0)  # Check every 2 seconds
 
     async def generate(
         self,

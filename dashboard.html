@@ -216,6 +216,10 @@
             <div class="host-list" id="host-list"><div class="no-data">Waiting for data...</div></div>
         </div>
         <div class="panel">
+            <h2>🔗 RPC Backends</h2>
+            <div class="host-list" id="rpc-host-list"><div class="no-data">No RPC backends configured</div></div>
+        </div>
+        <div class="panel">
             <h2>⚠️ Active Alerts</h2>
             <div class="alerts" id="alerts-list"><div class="no-data">No alerts</div></div>
         </div>
@@ -429,6 +433,27 @@
                     <div class="host-status ${host.status}">${host.status}</div>
                 </div>
             `).join('') : '<div class="no-data">No hosts found.</div>';
+
+            // Render RPC Backends
+            const rpcHostList = document.getElementById('rpc-host-list');
+            if (data.rpc_hosts && data.rpc_hosts.length > 0) {
+                rpcHostList.innerHTML = data.rpc_hosts.map(rpc => `
+                    <div class="host-item ${rpc.status}">
+                        <div>
+                            <div class="host-name">${rpc.host}</div>
+                            <div class="host-metrics">
+                                <span>⏱️ ${Math.round(rpc.avg_latency_ms)}ms</span>
+                                <span>✓ ${Math.round(rpc.success_rate * 100)}%</span>
+                                <span>📊 Requests: ${rpc.total_requests}</span>
+                                <span>❌ Failures: ${rpc.total_failures}</span>
+                            </div>
+                        </div>
+                        <div class="host-status ${rpc.status}">${rpc.status}</div>
+                    </div>
+                `).join('');
+            } else {
+                rpcHostList.innerHTML = '<div class="no-data">No RPC backends configured</div>';
+            }
 
             const alertsList = document.getElementById('alerts-list');
             alertsList.innerHTML = data.alerts.length > 0 ? data.alerts.map(alert => `

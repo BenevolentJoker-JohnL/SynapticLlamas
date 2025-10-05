@@ -58,6 +58,7 @@ sock = Sock(app)
 registry = None
 load_balancer = None
 hybrid_router = None  # For llama.cpp monitoring
+rpc_backend_registry = None  # For RPC backend monitoring
 
 def get_dashboard_data():
     """Get comprehensive dashboard data."""
@@ -150,10 +151,32 @@ def get_dashboard_data():
             routing_patterns = list(summary['task_types'].keys())
             task_types_learned = len(routing_patterns)
 
+    # Get RPC backend data from rpc_backend_registry (or fallback to hybrid_router)
+    rpc_hosts = []
+    registry_to_use = rpc_backend_registry
+
+    # Fallback to hybrid_router if direct registry not available
+    if not registry_to_use and hybrid_router and hasattr(hybrid_router, 'rpc_registry'):
+        registry_to_use = hybrid_router.rpc_registry
+
+    if registry_to_use and hasattr(registry_to_use, 'backends'):
+        for addr, backend in registry_to_use.backends.items():
+            rpc_host_data = {
+                'host': backend.address,
+                'status': 'healthy' if backend.is_healthy else 'offline',
+                'total_requests': backend.metrics.total_requests,
+                'total_failures': backend.metrics.total_failures,
+                'success_rate': backend.metrics.success_rate,
+                'avg_latency_ms': backend.metrics.avg_latency,
+                'last_check': backend.metrics.last_health_check
+            }
+            rpc_hosts.append(rpc_host_data)
+
     return {
         'status': {'healthy': bool(healthy_nodes), 'available_hosts': len(healthy_nodes), 'total_hosts': len(all_nodes), 'ray_workers': 0},
         'performance': {'avg_latency_ms': avg_latency, 'avg_success_rate': avg_success_rate, 'total_gpu_memory_mb': total_gpu_memory},
         'hosts': hosts,
+        'rpc_hosts': rpc_hosts,  # Add RPC backends data
         'alerts': alerts,
         'routing': {'patterns_available': routing_patterns, 'task_types_learned': task_types_learned},
     }
@@ -583,9 +606,9 @@ def ws_llama_cpp_logs(ws):
                 pass
             break
 
-def run_dashboard(host='0.0.0.0', port=8080, node_registry=None, sollol_lb=None, hybrid_router_ref=None):
+def run_dashboard(host='0.0.0.0', port=8080, node_registry=None, sollol_lb=None, hybrid_router_ref=None, rpc_registry=None):
     """Run the dashboard server."""
-    global registry, load_balancer, hybrid_router
+    global registry, load_balancer, hybrid_router, rpc_backend_registry
 
     if node_registry is None:
         from node_registry import NodeRegistry
@@ -607,6 +630,11 @@ def run_dashboard(host='0.0.0.0', port=8080, node_registry=None, sollol_lb=None,
     if hybrid_router_ref is not None:
         hybrid_router = hybrid_router_ref
         logger.info("🔧 llama.cpp monitoring enabled for dashboard")
+
+    # Set RPC registry for RPC backend monitoring
+    if rpc_registry is not None:
+        rpc_backend_registry = rpc_registry
+        logger.info(f"🔗 RPC backend monitoring enabled ({len(rpc_registry.backends)} backends)")
 
     # Capture werkzeug logs and route them to the queue
     werkzeug_logger = logging.getLogger('werkzeug')

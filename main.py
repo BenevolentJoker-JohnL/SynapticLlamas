@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+import sys
+import os
+import json
+import argparse
+import logging
+
+# Add SOLLOL to path FIRST before any other imports
+sollol_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'SOLLOL', 'src')
+if sollol_path not in sys.path:
+    sys.path.insert(0, sollol_path)
+
+# Now import other modules
 from orchestrator import run_parallel_agents
 from distributed_orchestrator import DistributedOrchestrator
 from node_registry import NodeRegistry
@@ -14,11 +26,9 @@ from console_theme import (
 from rich import box
 from rich.markdown import Markdown
 from rich.panel import Panel
-import json
-import argparse
-import sys
-import os
-import logging
+
+# Import SOLLOL modules
+from sollol.rpc_registry import RPCBackendRegistry
 
 # Configure logging to match SOLLOL format
 logging.basicConfig(
@@ -29,8 +39,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Global registry for distributed mode
-global_registry = NodeRegistry()
+# Global registries for distributed mode
+global_registry = NodeRegistry()  # Ollama nodes for task distribution
+global_rpc_registry = RPCBackendRegistry()  # RPC backends for model sharding
 global_orchestrator = None
 global_dask_executor = None
 
@@ -51,8 +62,11 @@ def load_config():
         "flockparser_enabled": False,
         "model": "llama3.2",
         "strategy": None,  # None = auto, or ExecutionMode value string
-        "distributed_inference_enabled": False,
-        "rpc_backends": []  # List of RPC backend configs
+
+        # Distribution settings - TWO distinct modes:
+        "task_distribution_enabled": True,   # Parallel agent execution across Ollama nodes
+        "model_sharding_enabled": False,     # RPC-based model distribution (llama.cpp)
+        "rpc_backends": []  # List of RPC backend configs for model sharding
     }
 
     if os.path.exists(CONFIG_PATH):
@@ -120,19 +134,51 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
         config.update(kwargs)
         save_config(config)
 
-    # Distributed inference settings
-    distributed_inference_enabled = config.get("distributed_inference_enabled", False)
+    # Distribution settings - TWO distinct modes:
+    # 1. Task Distribution: Parallel agent execution across Ollama nodes (default ON)
+    # 2. Model Sharding: RPC-based model distribution via llama.cpp (default OFF)
+
+    task_distribution_enabled = config.get("task_distribution_enabled", True)
+
+    # Backward compatibility: map old "distributed_inference_enabled" to new name
+    if "distributed_inference_enabled" in config:
+        model_sharding_enabled = config.get("distributed_inference_enabled", False)
+        # Migrate to new name
+        update_config(model_sharding_enabled=model_sharding_enabled)
+        config.pop("distributed_inference_enabled", None)
+    else:
+        model_sharding_enabled = config.get("model_sharding_enabled", False)
+
     rpc_backends = config.get("rpc_backends", [])
 
-    # Auto-discover RPC backends if distributed inference is enabled but no backends configured
-    if distributed_inference_enabled and len(rpc_backends) == 0:
-        logger.info("🔍 Distributed inference enabled but no RPC backends configured. Auto-discovering...")
+    # Filter out localhost from RPC backends (coordinator runs there, no distribution benefit)
+    rpc_backends = [
+        backend for backend in rpc_backends
+        if backend['host'] not in ['127.0.0.1', 'localhost']
+    ]
+    if len(rpc_backends) != len(config.get("rpc_backends", [])):
+        # Save cleaned config
+        update_config(rpc_backends=rpc_backends)
+
+    # Load RPC backends into registry for monitoring
+    global_rpc_registry.load_from_config(rpc_backends)
+
+    # Auto-discover RPC backends if model sharding is enabled
+    if model_sharding_enabled:
+        logger.info("🔍 Auto-discovering RPC backends for model sharding...")
         from sollol.rpc_discovery import auto_discover_rpc_backends
         discovered = auto_discover_rpc_backends()
         if discovered:
-            rpc_backends = discovered
+            # Merge with existing backends (avoid duplicates)
+            existing_set = {(b['host'], b['port']) for b in rpc_backends}
+            for backend in discovered:
+                key = (backend['host'], backend['port'])
+                if key not in existing_set:
+                    rpc_backends.append(backend)
+                    existing_set.add(key)
+
             update_config(rpc_backends=rpc_backends)
-            logger.info(f"✅ Auto-discovered and configured {len(discovered)} RPC backends")
+            logger.info(f"✅ RPC backends configured: {len(rpc_backends)} total (for model sharding)")
         else:
             logger.info("ℹ️  No RPC backends found. You can add them manually with: rpc add <host:port>")
 
@@ -181,13 +227,23 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
         rag_status = "[green]ON[/green]" if flockparser_enabled else "[dim]OFF[/dim]"
         print_command(f"rag on/off [{rag_status}]", "Toggle PDF RAG enhancement")
 
-        console.print("\n[bold red]🔗 DISTRIBUTED INFERENCE (llama.cpp)[/bold red]")
-        dist_status = "[green]ON[/green]" if distributed_inference_enabled else "[dim]OFF[/dim]"
-        print_command(f"distributed on/off [{dist_status}]", "Toggle llama.cpp distributed inference")
+        console.print("\n[bold red]⚡ DISTRIBUTION MODES[/bold red]")
+        task_status = "Task: " + ("[green]ON[/green]" if task_distribution_enabled else "[dim]OFF[/dim]")
+        model_status = "Model: " + ("[green]ON[/green]" if model_sharding_enabled else "[dim]OFF[/dim]")
+        console.print(f"[dim white]Current: {task_status}, {model_status}[/dim white]")
+
+        print_command(f"distributed task", "Enable task distribution (parallel agents across Ollama nodes)")
+        print_command(f"distributed model", "Enable model sharding (split large models via RPC)")
+        print_command(f"distributed both", "Enable BOTH task distribution + model sharding")
+        print_command(f"distributed off", "Disable all distribution modes")
+
+        console.print(f"\n[cyan]RPC Backend Management:[/cyan]")
         print_command(f"rpc discover", "Auto-discover RPC backends on network")
         print_command(f"rpc add <host:port>", "Add RPC backend (default port: 50052)")
         print_command(f"rpc remove <host:port>", "Remove RPC backend")
         print_command(f"rpc list", f"List RPC backends ({len(rpc_backends)} configured)")
+
+        console.print(f"\n[dim]💡 Task distribution = parallel agents. Model sharding = split large models.[/dim]")
 
         console.print("\n[bold red]🔧 NODE COMMANDS[/bold red]")
         print_command("nodes", "List Ollama nodes")
@@ -221,6 +277,26 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
         except Exception as e:
             logger.warning(f"Failed to auto-load nodes: {e}")
 
+    # Auto-discover Ollama nodes if in distributed mode
+    if current_mode == "distributed":
+        try:
+            from network_utils import suggest_scan_ranges
+            logger.info("🔍 Auto-discovering Ollama nodes on network...")
+            initial_count = len(global_registry.nodes)
+            ranges = suggest_scan_ranges()
+            if ranges:
+                for cidr in ranges:
+                    global_registry.discover_nodes(cidr)
+
+                discovered_count = len(global_registry.nodes) - initial_count
+                if discovered_count > 0:
+                    print_success(f"Auto-discovered {discovered_count} additional Ollama node(s)")
+                    # Save updated node list
+                    global_registry.save_config(NODES_CONFIG_PATH)
+            logger.info(f"✅ Total Ollama nodes available: {len(global_registry.nodes)}")
+        except Exception as e:
+            logger.warning(f"Ollama node auto-discovery failed: {e}")
+
     # Initialize based on mode
     def ensure_orchestrator():
         global global_orchestrator, global_dask_executor
@@ -233,8 +309,9 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                 global_orchestrator = DistributedOrchestrator(
                     global_registry,
                     use_flockparser=flockparser_enabled,
-                    enable_distributed_inference=distributed_inference_enabled,
-                    rpc_backends=rpc_backends if distributed_inference_enabled else None
+                    enable_distributed_inference=model_sharding_enabled,
+                    rpc_backends=rpc_backends if model_sharding_enabled else None,
+                    task_distribution_enabled=task_distribution_enabled
                 )
             return None, global_orchestrator
         else:
@@ -417,32 +494,67 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     else:
                         print("❌ Use 'rag on' or 'rag off'\n")
 
-            # Distributed inference toggle
+            # Distributed mode selection
             elif command == 'distributed':
                 if len(parts) < 2:
-                    print(f"❌ Usage: distributed [on|off]\n")
+                    print(f"❌ Usage: distributed [task|model|both|off]\n")
+                    print("   • task  - Task distribution (parallel agents across Ollama nodes)")
+                    print("   • model - Model sharding (split large models via RPC backends)")
+                    print("   • both  - Enable BOTH modes")
+                    print("   • off   - Disable all distribution\n")
                 else:
-                    toggle = parts[1].lower()
-                    if toggle == 'on':
+                    mode = parts[1].lower()
+                    ollama_nodes_count = len(global_registry.get_healthy_nodes())
+
+                    if mode == 'task':
+                        task_distribution_enabled = True
+                        model_sharding_enabled = False
+                        update_config(task_distribution_enabled=True, model_sharding_enabled=False)
+                        global_orchestrator = None
+                        print("✅ TASK DISTRIBUTION MODE")
+                        print(f"   Using {ollama_nodes_count} Ollama nodes for load balancing")
+                        print("   Agents execute in parallel across Ollama nodes")
+                        print("   Model sharding: DISABLED\n")
+
+                    elif mode == 'model':
                         if len(rpc_backends) == 0:
                             print("⚠️  No RPC backends configured!")
-                            print("   Add RPC backends first: rpc add <host:port>\n")
+                            print("   Use 'rpc discover' or 'rpc add <host:port>' first\n")
                         else:
-                            distributed_inference_enabled = True
-                            update_config(distributed_inference_enabled=True)
-                            # Force re-initialization
+                            task_distribution_enabled = False
+                            model_sharding_enabled = True
+                            update_config(task_distribution_enabled=False, model_sharding_enabled=True)
                             global_orchestrator = None
-                            print("✅ llama.cpp distributed inference ENABLED")
+                            print("✅ MODEL SHARDING MODE")
                             print(f"   Using {len(rpc_backends)} RPC backend(s)")
-                            print("   Large models (>70B) will use distributed inference\n")
-                    elif toggle == 'off':
-                        distributed_inference_enabled = False
-                        update_config(distributed_inference_enabled=False)
-                        # Force re-initialization
+                            print("   Large models (>13B) split via llama.cpp")
+                            print("   Task distribution: DISABLED\n")
+
+                    elif mode == 'both':
+                        if len(rpc_backends) == 0:
+                            print("⚠️  No RPC backends configured for model sharding!")
+                            print("   Use 'rpc discover' or 'rpc add <host:port>' first\n")
+                        else:
+                            task_distribution_enabled = True
+                            model_sharding_enabled = True
+                            update_config(task_distribution_enabled=True, model_sharding_enabled=True)
+                            global_orchestrator = None
+                            print("✅ BOTH MODES ENABLED")
+                            print(f"   Task distribution: {ollama_nodes_count} Ollama nodes (parallel agents)")
+                            print(f"   Model sharding: {len(rpc_backends)} RPC backends (large models)")
+                            print("   → Small models use task distribution")
+                            print("   → Large models (>13B) use model sharding\n")
+
+                    elif mode == 'off':
+                        task_distribution_enabled = False
+                        model_sharding_enabled = False
+                        update_config(task_distribution_enabled=False, model_sharding_enabled=False)
                         global_orchestrator = None
-                        print("✅ llama.cpp distributed inference DISABLED\n")
+                        print("❌ ALL DISTRIBUTION DISABLED")
+                        print("   Sequential execution only\n")
+
                     else:
-                        print("❌ Use 'distributed on' or 'distributed off'\n")
+                        print("❌ Unknown mode. Use: distributed [task|model|both|off]\n")
 
             # RPC backend management
             elif command == 'rpc':
@@ -465,7 +577,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
                             if added_count > 0:
                                 update_config(rpc_backends=rpc_backends)
-                                if distributed_inference_enabled:
+                                if model_sharding_enabled:
                                     global_orchestrator = None
                                 print(f"\n✅ Added {added_count} new RPC backend(s)")
                                 print(f"   Total backends: {len(rpc_backends)}\n")
@@ -499,8 +611,8 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             if backend not in rpc_backends:
                                 rpc_backends.append(backend)
                                 update_config(rpc_backends=rpc_backends)
-                                # Force re-initialization if distributed inference is enabled
-                                if distributed_inference_enabled:
+                                # Force re-initialization if model sharding is enabled
+                                if model_sharding_enabled:
                                     global_orchestrator = None
                                 print(f"✅ Added RPC backend: {host}:{port}")
                                 print(f"   Total backends: {len(rpc_backends)}\n")
@@ -522,15 +634,15 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             if backend in rpc_backends:
                                 rpc_backends.remove(backend)
                                 update_config(rpc_backends=rpc_backends)
-                                # Force re-initialization if distributed inference is enabled
-                                if distributed_inference_enabled:
+                                # Force re-initialization if model sharding is enabled
+                                if model_sharding_enabled:
                                     global_orchestrator = None
                                 print(f"✅ Removed RPC backend: {host}:{port}")
                                 print(f"   Total backends: {len(rpc_backends)}\n")
 
-                                # Warn if distributed inference is enabled with no backends
-                                if distributed_inference_enabled and len(rpc_backends) == 0:
-                                    print("⚠️  No RPC backends remaining! Distributed inference will fail.\n")
+                                # Warn if model sharding is enabled with no backends
+                                if model_sharding_enabled and len(rpc_backends) == 0:
+                                    print("⚠️  No RPC backends remaining! Model sharding will fail.\n")
                             else:
                                 print(f"❌ Backend not found: {host}:{port}\n")
                     else:
@@ -576,8 +688,9 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     "Ollama Nodes": len(global_registry),
                     "Healthy Nodes": len(global_registry.get_healthy_nodes()),
                     "GPU Nodes": len(global_registry.get_gpu_nodes()),
-                    "Distributed Inference": 'ON' if distributed_inference_enabled else 'OFF',
-                    "RPC Backends": len(rpc_backends) if distributed_inference_enabled else 'N/A'
+                    "Task Distribution": 'ON' if task_distribution_enabled else 'OFF',
+                    "Model Sharding": 'ON' if model_sharding_enabled else 'OFF',
+                    "RPC Backends": len(rpc_backends) if model_sharding_enabled else 'N/A'
                 }
                 if current_mode == 'dask' and executor:
                     status_data["Dask Workers"] = len(executor.client.scheduler_info()['workers'])
@@ -635,7 +748,8 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         port=8080,
                         node_registry=current_registry,
                         sollol_lb=current_lb,
-                        hybrid_router_ref=current_hybrid_router
+                        hybrid_router_ref=current_hybrid_router,
+                        rpc_registry=global_rpc_registry
                     )
 
                 dashboard_thread = threading.Thread(target=run_dashboard_thread, daemon=True, name="DashboardServer")
@@ -691,8 +805,10 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
             # Node management commands
             elif command == 'nodes':
+                # Show Ollama nodes (for task distribution)
                 nodes_list = list(global_registry.nodes.values())
                 if nodes_list:
+                    print("🔀 OLLAMA NODES (Task Distribution - Parallel Agents)")
                     print_node_table([n.to_dict() for n in nodes_list])
                     # Also show current metrics for debugging
                     print("\n📊 Current Metrics:")
@@ -703,7 +819,38 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         print(f"    Load score: {node.calculate_load_score():.1f}")
                     print()
                 else:
-                    print_warning("No nodes registered")
+                    print("🔀 OLLAMA NODES (Task Distribution - Parallel Agents)")
+                    print_warning("No Ollama nodes registered\n")
+
+                # Show RPC backends (for model sharding)
+                print("\n🔗 RPC BACKENDS (Model Sharding - Large Models)")
+                rpc_backends_list = list(global_rpc_registry.backends.values())
+                if rpc_backends_list:
+                    from rich.table import Table
+                    table = Table(box=box.ROUNDED)
+                    table.add_column("Address", style="cyan")
+                    table.add_column("Status", style="green")
+                    table.add_column("Requests", justify="right")
+                    table.add_column("Success Rate", justify="right")
+                    table.add_column("Avg Latency", justify="right")
+
+                    for backend in rpc_backends_list:
+                        status = "✅ HEALTHY" if backend.is_healthy else "❌ OFFLINE"
+                        status_style = "green" if backend.is_healthy else "red"
+
+                        table.add_row(
+                            backend.address,
+                            f"[{status_style}]{status}[/{status_style}]",
+                            str(backend.metrics.total_requests),
+                            f"{backend.metrics.success_rate * 100:.1f}%",
+                            f"{backend.metrics.avg_latency:.0f}ms"
+                        )
+
+                    console.print(table)
+                    print()
+                else:
+                    print_warning("No RPC backends configured\n")
+                    print("   Use 'rpc discover' or 'rpc add <host:port>' to add backends\n")
 
             elif command == 'add':
                 if len(parts) < 2:
@@ -1035,10 +1182,10 @@ def main():
             global_registry.load_config(args.load_config)
             print(f"✅ Loaded config from {args.load_config}")
 
-        # Handle distributed inference setup from CLI
+        # Handle distributed inference setup from CLI (backward compatibility)
         if args.enable_distributed_inference:
             config = load_config()
-            config['distributed_inference_enabled'] = True
+            config['model_sharding_enabled'] = True
 
             # Add RPC backends from CLI
             if args.rpc_backend:

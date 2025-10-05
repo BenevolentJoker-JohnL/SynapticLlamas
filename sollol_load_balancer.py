@@ -67,7 +67,8 @@ class SOLLOLLoadBalancer:
         registry: NodeRegistry,
         enable_gpu_control: bool = True,
         enable_hedging: bool = False,
-        num_hedges: int = 2
+        num_hedges: int = 2,
+        hybrid_router: Optional['HybridRouter'] = None
     ):
         """
         Initialize SOLLOL load balancer.
@@ -77,8 +78,10 @@ class SOLLOLLoadBalancer:
             enable_gpu_control: Enable active GPU controller integration
             enable_hedging: Enable race-to-first hedging for low latency
             num_hedges: Number of parallel requests when hedging (2-3 recommended)
+            hybrid_router: Optional HybridRouter for intelligent Ollama/RPC routing
         """
         self.registry = registry
+        self.hybrid_router = hybrid_router
 
         # SOLLOL components
         self.intelligence = IntelligentRouter()

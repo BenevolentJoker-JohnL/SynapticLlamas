@@ -5,6 +5,7 @@ import time
 import sys
 import os
 import logging
+import asyncio
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -36,6 +37,59 @@ class BaseAgent(ABC):
     def call_ollama(self, prompt, system_prompt=None, force_json=True, use_trustcall=True):
         """Call Ollama API with the given prompt using SOLLOL intelligent routing."""
         start_time = time.time()
+
+        # Debug: Check what routing is available
+        has_hybrid = hasattr(self, '_hybrid_router_sync') and self._hybrid_router_sync is not None
+        has_lb = hasattr(self, '_load_balancer') and self._load_balancer is not None
+        logger.info(f"🔍 {self.name}: has_hybrid={has_hybrid}, has_lb={has_lb}, model={self.model}")
+
+        # Check if HybridRouter sync wrapper is available for RPC sharding
+        if hasattr(self, '_hybrid_router_sync') and self._hybrid_router_sync is not None:
+            try:
+                logger.info(f"🔀 Using HybridRouter for {self.model}")
+
+                # Convert to messages format
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": prompt})
+
+                # Call sync wrapper (runs in background thread, no event loop issues)
+                response = self._hybrid_router_sync.route_request(
+                    model=self.model,
+                    messages=messages,
+                    stream=False,
+                    timeout=self.timeout
+                )
+
+                self.execution_time = time.time() - start_time
+                logger.info(f"✅ {self.name} completed via HybridRouter in {self.execution_time:.2f}s")
+
+                # Extract content from response
+                if isinstance(response, dict):
+                    if 'message' in response:
+                        raw_output = response['message'].get('content', '')
+                    elif 'response' in response:
+                        raw_output = response['response']
+                    elif 'content' in response:
+                        raw_output = response['content']
+                    else:
+                        raw_output = str(response)
+                else:
+                    raw_output = str(response)
+
+                # Return standardized format
+                return {
+                    "agent": self.name,
+                    "status": "success",
+                    "format": "json" if force_json else "text",
+                    "data": standardize_to_json(raw_output) if force_json else raw_output
+                }
+            except Exception as e:
+                logger.error(f"❌ HybridRouter failed for {self.name}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Fall through to regular Ollama call
 
         # Build payload - try with format: json first
         payload = {
