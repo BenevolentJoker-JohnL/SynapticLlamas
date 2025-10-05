@@ -271,15 +271,22 @@ class HybridRouter:
 
                 # Start coordinator
                 logger.info(f"🚀 [Thread {thread_id}] Starting llama.cpp coordinator for {model}...")
-                await self.coordinator.start()
-
-                # Track which model is loaded
-                self.coordinator_model = model
-
-                logger.info(
-                    f"✅ [Thread {thread_id}] Coordinator started with {len(backends)} RPC backends "
-                    f"on {self.coordinator_host}:{self.coordinator_port}"
-                )
+                try:
+                    await self.coordinator.start()
+                    # Track which model is loaded
+                    self.coordinator_model = model
+                    logger.info(
+                        f"✅ [Thread {thread_id}] Coordinator started with {len(backends)} RPC backends "
+                        f"on {self.coordinator_host}:{self.coordinator_port}"
+                    )
+                except Exception as e:
+                    # Startup failed - clean up the failed coordinator
+                    print(f"❌ [Thread {thread_id}] Coordinator startup failed: {e}", flush=True)
+                    logger.error(f"Coordinator startup failed: {e}")
+                    if self.coordinator and self.coordinator.process:
+                        self.coordinator.process.kill()
+                    self.coordinator = None
+                    raise
 
     def should_use_distributed(self, model: str) -> bool:
         """
