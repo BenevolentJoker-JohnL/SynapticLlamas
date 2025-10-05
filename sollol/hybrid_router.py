@@ -91,7 +91,7 @@ class HybridRouter:
         ollama_pool: Optional[OllamaPool] = None,
         rpc_backends: Optional[List[Dict[str, Any]]] = None,
         coordinator_host: str = "127.0.0.1",
-        coordinator_port: int = 8080,
+        coordinator_port: int = 18080,  # Changed from 8080 to avoid conflict with dashboard
         enable_distributed: bool = True,
         auto_discover_rpc: bool = True,
         auto_setup_rpc: bool = False,
