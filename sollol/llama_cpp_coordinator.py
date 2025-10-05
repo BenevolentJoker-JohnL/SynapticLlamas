@@ -65,7 +65,7 @@ class LlamaCppCoordinator:
         host: str = "127.0.0.1",
         port: int = 8080,
         n_gpu_layers: int = 99,
-        ctx_size: int = 8192
+        ctx_size: int = 2048
     ):
         """
         Initialize coordinator.
