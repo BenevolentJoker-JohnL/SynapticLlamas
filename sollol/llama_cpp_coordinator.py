@@ -167,8 +167,8 @@ class LlamaCppCoordinator:
             logger.error(f"Failed to start llama-server: {e}")
             raise
 
-    async def _wait_for_ready(self, timeout: float = 600.0):
-        """Wait for llama-server to be ready (10 minutes for multi-backend model loading)."""
+    async def _wait_for_ready(self, timeout: float = 1200.0):
+        """Wait for llama-server to be ready (20 minutes for multi-backend model loading)."""
         start_time = asyncio.get_event_loop().time()
         loading_detected = False
 
