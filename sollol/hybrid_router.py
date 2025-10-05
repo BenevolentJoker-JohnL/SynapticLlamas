@@ -204,8 +204,13 @@ class HybridRouter:
 
         # Quick check without lock (optimization for common case)
         if self.coordinator and self.coordinator_model == model:
-            logger.info(f"✅ [Thread {thread_id}] Coordinator already running for {model}, reusing")
-            return
+            # Check if coordinator process is still alive
+            if self.coordinator.process and self.coordinator.process.poll() is None:
+                logger.info(f"✅ [Thread {thread_id}] Coordinator already running for {model}, reusing")
+                return
+            else:
+                logger.warning(f"⚠️  [Thread {thread_id}] Coordinator process died! Will recreate.")
+                self.coordinator = None
 
         logger.info(f"🔒 [Thread {thread_id}] Waiting for coordinator lock...")
         # Acquire lock for coordinator creation/modification
@@ -213,8 +218,13 @@ class HybridRouter:
             logger.info(f"🔓 [Thread {thread_id}] Acquired coordinator lock")
             # Double-check after acquiring lock (another thread may have created it)
             if self.coordinator and self.coordinator_model == model:
-                logger.info(f"✅ [Thread {thread_id}] Coordinator ready for {model} (created by another request)")
-                return
+                # Verify process is still alive
+                if self.coordinator.process and self.coordinator.process.poll() is None:
+                    logger.info(f"✅ [Thread {thread_id}] Coordinator ready for {model} (created by another request)")
+                    return
+                else:
+                    logger.warning(f"⚠️  [Thread {thread_id}] Coordinator process died (inside lock)! Will recreate.")
+                    self.coordinator = None
 
             # Resolve GGUF path from Ollama storage
             logger.info(f"🔍 [Thread {thread_id}] Resolving GGUF path for Ollama model: {model}")
