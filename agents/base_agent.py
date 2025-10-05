@@ -83,7 +83,7 @@ class BaseAgent(ABC):
                     "agent": self.name,
                     "status": "success",
                     "format": "json" if force_json else "text",
-                    "data": standardize_to_json(raw_output) if force_json else raw_output
+                    "data": standardize_to_json(self.name, raw_output) if force_json else raw_output
                 }
             except Exception as e:
                 logger.error(f"❌ HybridRouter failed for {self.name}: {e}")
