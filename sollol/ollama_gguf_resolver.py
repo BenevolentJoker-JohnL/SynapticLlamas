@@ -50,11 +50,14 @@ class OllamaGGUFResolver:
         self.blobs_dir = self.models_dir / "blobs"
         self.manifests_dir = self.models_dir / "manifests"
 
+        # Cache for resolved GGUF paths (model_name -> gguf_path)
+        self._cache: Dict[str, str] = {}
+
         logger.info(f"OllamaGGUFResolver initialized: {self.models_dir}")
 
     def resolve(self, model_name: str) -> Optional[str]:
         """
-        Resolve Ollama model name to GGUF blob path.
+        Resolve Ollama model name to GGUF blob path (with caching).
 
         Args:
             model_name: Ollama model name (e.g., "llama3.1:405b")
@@ -68,15 +71,22 @@ class OllamaGGUFResolver:
             >>> print(path)
             /home/user/.ollama/models/blobs/sha256-abc123...
         """
+        # Check cache first
+        if model_name in self._cache:
+            logger.debug(f"✅ Cache hit for {model_name} → {self._cache[model_name]}")
+            return self._cache[model_name]
+
         try:
             # Method 1: Use `ollama show` command (most reliable)
             gguf_path = self._resolve_via_ollama_show(model_name)
             if gguf_path:
+                self._cache[model_name] = gguf_path
                 return gguf_path
 
             # Method 2: Parse manifest files directly
             gguf_path = self._resolve_via_manifest(model_name)
             if gguf_path:
+                self._cache[model_name] = gguf_path
                 return gguf_path
 
             logger.warning(f"Could not resolve GGUF path for model: {model_name}")
