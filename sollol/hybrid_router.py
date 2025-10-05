@@ -19,6 +19,7 @@ Ollama's simple API.
 """
 
 import logging
+import asyncio
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
@@ -164,6 +165,9 @@ class HybridRouter:
         self.coordinator: Optional[LlamaCppCoordinator] = None
         self.coordinator_model: Optional[str] = None  # Track which model is loaded
 
+        # Lock for coordinator creation to prevent race conditions when multiple agents start simultaneously
+        self._coordinator_lock = asyncio.Lock()
+
         # GGUF resolver for extracting models from Ollama storage
         self.gguf_resolver = OllamaGGUFResolver()
 
@@ -189,61 +193,71 @@ class HybridRouter:
         3. Restarts coordinator if different model requested
         4. Starts coordinator if not already running
 
+        Uses a lock to prevent race conditions when multiple agents start simultaneously.
+
         Args:
             model: Ollama model name (e.g., "llama3.1:405b")
         """
-        # If coordinator exists and serving same model, we're done
+        # Quick check without lock (optimization for common case)
         if self.coordinator and self.coordinator_model == model:
+            logger.debug(f"✅ Coordinator already running for {model}, reusing")
             return
 
-        # Resolve GGUF path from Ollama storage
-        logger.info(f"🔍 Resolving GGUF path for Ollama model: {model}")
-        gguf_path = self.gguf_resolver.resolve(model)
+        # Acquire lock for coordinator creation/modification
+        async with self._coordinator_lock:
+            # Double-check after acquiring lock (another thread may have created it)
+            if self.coordinator and self.coordinator_model == model:
+                logger.debug(f"✅ Coordinator ready for {model} (created by another request)")
+                return
 
-        if not gguf_path:
-            raise FileNotFoundError(
-                f"Could not find GGUF for '{model}' in Ollama storage. "
-                f"Please ensure model is pulled: ollama pull {model}"
-            )
+            # Resolve GGUF path from Ollama storage
+            logger.info(f"🔍 Resolving GGUF path for Ollama model: {model}")
+            gguf_path = self.gguf_resolver.resolve(model)
 
-        logger.info(f"✅ Found GGUF: {gguf_path}")
-
-        # Stop existing coordinator if serving different model
-        if self.coordinator and self.coordinator_model != model:
-            logger.info(f"Stopping coordinator (switching from {self.coordinator_model} to {model})")
-            await self.coordinator.stop()
-            self.coordinator = None
-
-        # Create coordinator if needed
-        if not self.coordinator:
-            # Convert dict configs to RPCBackend objects
-            backends = [
-                RPCBackend(
-                    host=backend['host'],
-                    port=backend.get('port', 50052)
+            if not gguf_path:
+                raise FileNotFoundError(
+                    f"Could not find GGUF for '{model}' in Ollama storage. "
+                    f"Please ensure model is pulled: ollama pull {model}"
                 )
-                for backend in self.rpc_backends
-            ]
 
-            # Create coordinator
-            self.coordinator = LlamaCppCoordinator(
-                model_path=gguf_path,
-                rpc_backends=backends,
-                host=self.coordinator_host,
-                port=self.coordinator_port
-            )
+            logger.info(f"✅ Found GGUF: {gguf_path}")
 
-            # Start coordinator
-            logger.info(f"🚀 Starting llama.cpp coordinator for {model}...")
-            await self.coordinator.start()
+            # Stop existing coordinator if serving different model
+            if self.coordinator and self.coordinator_model != model:
+                logger.info(f"Stopping coordinator (switching from {self.coordinator_model} to {model})")
+                await self.coordinator.stop()
+                self.coordinator = None
 
-            # Track which model is loaded
-            self.coordinator_model = model
+            # Create coordinator if needed
+            if not self.coordinator:
+                # Convert dict configs to RPCBackend objects
+                backends = [
+                    RPCBackend(
+                        host=backend['host'],
+                        port=backend.get('port', 50052)
+                    )
+                    for backend in self.rpc_backends
+                ]
 
-            logger.info(
-                f"✅ Coordinator started with {len(backends)} RPC backends "
-                f"on {self.coordinator_host}:{self.coordinator_port}"
-            )
+                # Create coordinator
+                self.coordinator = LlamaCppCoordinator(
+                    model_path=gguf_path,
+                    rpc_backends=backends,
+                    host=self.coordinator_host,
+                    port=self.coordinator_port
+                )
+
+                # Start coordinator
+                logger.info(f"🚀 Starting llama.cpp coordinator for {model}...")
+                await self.coordinator.start()
+
+                # Track which model is loaded
+                self.coordinator_model = model
+
+                logger.info(
+                    f"✅ Coordinator started with {len(backends)} RPC backends "
+                    f"on {self.coordinator_host}:{self.coordinator_port}"
+                )
 
     def should_use_distributed(self, model: str) -> bool:
         """
