@@ -509,11 +509,13 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     if mode == 'task':
                         task_distribution_enabled = True
                         model_sharding_enabled = False
-                        update_config(task_distribution_enabled=True, model_sharding_enabled=False)
+                        current_model = "llama3.2"  # Use small model for task distribution
+                        update_config(task_distribution_enabled=True, model_sharding_enabled=False, model="llama3.2")
                         global_orchestrator = None
                         print("✅ TASK DISTRIBUTION MODE")
                         print(f"   Using {ollama_nodes_count} Ollama nodes for load balancing")
                         print("   Agents execute in parallel across Ollama nodes")
+                        print("   Model: llama3.2 (optimized for task distribution)")
                         print("   Model sharding: DISABLED\n")
 
                     elif mode == 'model':
@@ -523,10 +525,12 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         else:
                             task_distribution_enabled = False
                             model_sharding_enabled = True
-                            update_config(task_distribution_enabled=False, model_sharding_enabled=True)
+                            current_model = "llama3.1:70b"  # Use large model for sharding
+                            update_config(task_distribution_enabled=False, model_sharding_enabled=True, model="llama3.1:70b")
                             global_orchestrator = None
                             print("✅ MODEL SHARDING MODE")
                             print(f"   Using {len(rpc_backends)} RPC backend(s)")
+                            print("   Model: llama3.1:70b (distributed via llama.cpp)")
                             print("   Large models (>13B) split via llama.cpp")
                             print("   Task distribution: DISABLED\n")
 
@@ -537,11 +541,13 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         else:
                             task_distribution_enabled = True
                             model_sharding_enabled = True
-                            update_config(task_distribution_enabled=True, model_sharding_enabled=True)
+                            current_model = "llama3.2"  # Default to small model for task distribution
+                            update_config(task_distribution_enabled=True, model_sharding_enabled=True, model="llama3.2")
                             global_orchestrator = None
                             print("✅ BOTH MODES ENABLED")
                             print(f"   Task distribution: {ollama_nodes_count} Ollama nodes (parallel agents)")
                             print(f"   Model sharding: {len(rpc_backends)} RPC backends (large models)")
+                            print(f"   Model: llama3.2 (use 'model llama3.1:70b' to switch to sharded mode)")
                             print("   → Small models use task distribution")
                             print("   → Large models (>13B) use model sharding\n")
 
