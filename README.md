@@ -433,6 +433,8 @@ cd SynapticLlamas
 pip install -r requirements.txt
 ```
 
+**Note:** SynapticLlamas now uses [SOLLOL](https://github.com/BenevolentJoker-JohnL/SOLLOL) as a package dependency (v0.3.6+) for intelligent routing and distributed inference capabilities.
+
 **Prerequisites:**
 - Python 3.8+
 - Ollama running locally (`http://localhost:11434`)
