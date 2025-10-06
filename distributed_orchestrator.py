@@ -1019,8 +1019,20 @@ class DistributedOrchestrator:
                 if key in content and content[key]:  # Must have actual content
                     return str(content[key])
 
-            # If no known keys found with content, return empty rather than metadata
-            # DO NOT fall back to extracting other fields - they're likely metadata
+            # If no known keys found, try to extract ANY string value
+            # This handles cases where the JSON uses custom keys like {"The Thread of Time": "story content"}
+            for key, value in content.items():
+                # Skip metadata keys (short values, lowercase, underscores)
+                if isinstance(value, str) and len(value) > 50:  # Narrative content is usually >50 chars
+                    if not key.startswith('_') and not key.islower():  # Skip metadata-like keys
+                        return str(value)
+
+            # If still no content found, try ANY string value regardless of length
+            for key, value in content.items():
+                if isinstance(value, str) and value.strip():
+                    return str(value)
+
+            # Last resort: log warning
             logger.warning(f"No narrative content found in JSON response. Keys present: {list(content.keys())}")
             return ""
 

@@ -40,6 +40,7 @@ class ContentDetector:
                     r'\b(what is|how does|why does|when did)\b',
                     r'\b(implications|applications|impact|effects)\b',
                     r'\b(explain|erxplain|expalin|expain)\b',  # Include common typos
+                    r'\btell me (what|about|how|why|when)\b',  # "tell me what/about" = research
                 ],
                 'indicators': [
                     'explain quantum',
@@ -50,6 +51,10 @@ class ContentDetector:
                     'what are the',
                     'provide an overview',
                     'research on',
+                    'tell me what',
+                    'tell me about',
+                    'tell me how',
+                    'tell me why',
                 ]
             },
             ContentType.DISCUSSION: {
@@ -72,18 +77,19 @@ class ContentDetector:
                 'keywords': [
                     r'\b(story|tale|narrative|adventure|journey|sotry)\b',  # Include common typo
                     r'\b(character|protagonist|hero|villain)\b',
-                    r'\b(write|create|tell me|imagine|give me)\b',
+                    r'\b(write|create|imagine)\b',  # Removed "tell me" and "give me"
                     r'\b(once upon|chapter|scene|plot)\b',
                     r'\b(fiction|novel|short story)\b',
                     r'\b(kid friendly|for kids|children)\b',
+                    r'\btell me a (story|tale)\b',  # Only "tell me a story/tale" = storytelling
                 ],
                 'indicators': [
                     'write a story',
                     'tell me a tale',
+                    'tell me a story',
                     'create a narrative',
                     'fiction about',
                     'adventure of',
-                    'give me a story',
                     'story about',
                     'tale about',
                 ]
