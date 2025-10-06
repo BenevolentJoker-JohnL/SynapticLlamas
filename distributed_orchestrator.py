@@ -1011,10 +1011,11 @@ class DistributedOrchestrator:
 
         if isinstance(content, dict):
             # Try to extract narrative content from common keys (in priority order)
-            # 'story' is first for Storyteller agent output
+            # 'data' is for SOLLOL package agent responses
+            # 'story' is for Storyteller agent output
             # 'detailed_explanation' is for Editor synthesis output
             # 'context' is for Researcher agent output
-            for key in ['story', 'detailed_explanation', 'context', 'final_output', 'summary', 'content', 'narrative']:
+            for key in ['data', 'story', 'detailed_explanation', 'context', 'final_output', 'summary', 'content', 'narrative']:
                 if key in content and content[key]:  # Must have actual content
                     return str(content[key])
 
