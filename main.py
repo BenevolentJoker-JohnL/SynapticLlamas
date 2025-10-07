@@ -801,15 +801,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                 def run_dashboard_thread():
                     # Use NEW SOLLOL UnifiedDashboard with universal observability
                     from sollol import UnifiedDashboard, DashboardClient
-
-                    # Register SynapticLlamas with the dashboard
-                    client = DashboardClient(
-                        app_name="SynapticLlamas",
-                        router_type="HybridRouter",
-                        version="1.0.0",
-                        dashboard_url="http://localhost:8080",
-                        metadata={"nodes": len(current_registry) if current_registry else 0}
-                    )
+                    import time
 
                     # Create SOLLOL UnifiedDashboard with NEW features
                     dashboard = UnifiedDashboard(
@@ -827,7 +819,29 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     logging.info("   • Dask dashboard (port 8787)")
                     logging.info("   • WebSocket event streams")
 
-                    dashboard.run(host='0.0.0.0', debug=False)
+                    # Start dashboard in background thread
+                    import threading
+                    server_thread = threading.Thread(
+                        target=lambda: dashboard.run(host='0.0.0.0', debug=False),
+                        daemon=True
+                    )
+                    server_thread.start()
+
+                    # Wait for server to start
+                    time.sleep(2)
+
+                    # NOW register SynapticLlamas with the dashboard (after server is ready)
+                    client = DashboardClient(
+                        app_name="SynapticLlamas",
+                        router_type="HybridRouter",
+                        version="1.0.0",
+                        dashboard_url="http://localhost:8080",
+                        metadata={"nodes": len(current_registry) if current_registry else 0}
+                    )
+
+                    # Keep thread alive (server_thread is daemon, so it will die when main thread dies)
+                    while True:
+                        time.sleep(60)
 
                 dashboard_thread = threading.Thread(target=run_dashboard_thread, daemon=True, name="DashboardServer")
                 dashboard_thread.start()
