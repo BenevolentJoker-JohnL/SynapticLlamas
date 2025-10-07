@@ -850,7 +850,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                 dashboard_thread.start()
 
                 import time
-                time.sleep(2)  # Give server time to start
+                time.sleep(4)  # Give server time to start AND register (2s server + 2s registration)
 
                 logging.info("📊 NEW SOLLOL Dashboard features enabled!")
 
