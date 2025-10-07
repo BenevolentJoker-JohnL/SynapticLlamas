@@ -75,6 +75,20 @@ class DistributedOrchestrator:
                 from sollol.pool import OllamaPool
                 from hybrid_router_sync import HybridRouterSync
 
+                # Auto-discover RPC backends if not provided or empty
+                if rpc_backends is None or len(rpc_backends) == 0:
+                    logger.info("🔍 Auto-discovering RPC backends...")
+                    from sollol.rpc_discovery import auto_discover_rpc_backends
+                    discovered_backends = auto_discover_rpc_backends()
+                    if discovered_backends:
+                        rpc_backends = discovered_backends
+                        logger.info(f"✅ Discovered {len(rpc_backends)} RPC backend(s) for distributed inference")
+                        for backend in rpc_backends:
+                            logger.info(f"   • {backend['host']}:{backend['port']}")
+                    else:
+                        logger.info("ℹ️  No RPC backends discovered - Ray will be used for Ollama parallelization only")
+                        rpc_backends = []
+
                 # Only create OllamaPool if task distribution is enabled
                 ollama_pool = None
                 if task_distribution_enabled:
@@ -92,11 +106,18 @@ class DistributedOrchestrator:
                     ollama_pool=ollama_pool,  # None if task distribution disabled
                     rpc_backends=rpc_backends,
                     enable_distributed=True,
-                    pool_size=5,  # Ray parallel pool size
                 )
 
                 # Create sync wrapper for agents
                 self.hybrid_router_sync = HybridRouterSync(self.hybrid_router)
+
+                # Re-apply logging suppression after Dask client initialization
+                # (Dask resets logging configuration when client is created)
+                logging.getLogger('distributed').setLevel(logging.ERROR)
+                logging.getLogger('distributed.worker').setLevel(logging.ERROR)
+                logging.getLogger('distributed.scheduler').setLevel(logging.ERROR)
+                logging.getLogger('distributed.nanny').setLevel(logging.ERROR)
+                logging.getLogger('distributed.core').setLevel(logging.ERROR)
 
                 logger.info(f"✨ Ray+Dask distributed routing enabled")
                 logger.info(f"🔗 llama.cpp model sharding enabled with {len(rpc_backends) if rpc_backends else 0} RPC backends")

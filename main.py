@@ -36,6 +36,44 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+# Suppress at warnings module level (for UserWarning from Dask)
+import warnings
+warnings.filterwarnings('ignore', message='.*Task queue depth.*')
+warnings.filterwarnings('ignore', message='.*Unknown GPU.*')
+warnings.filterwarnings('ignore', message='.*Port .* is already in use.*')
+
+# Add filter to block specific noisy warnings permanently
+class DistributedWarningFilter(logging.Filter):
+    """Filter out noisy Dask/distributed warnings"""
+    def filter(self, record):
+        msg = record.getMessage()
+        # Block "Task queue depth" warnings
+        if "Task queue depth" in msg:
+            return False
+        # Block GPU warnings from SOLLOL
+        if "Unknown GPU" in msg:
+            return False
+        return True
+
+# Apply filter to root logger (catches everything)
+logging.root.addFilter(DistributedWarningFilter())
+
+# Configure Dask to suppress worker logging
+try:
+    import dask
+    dask.config.set({'logging.distributed': 'error'})
+except:
+    pass
+
+# Suppress noisy warnings from distributed and SOLLOL
+logging.getLogger('distributed').setLevel(logging.ERROR)  # Parent logger catches all distributed warnings
+logging.getLogger('distributed.worker').setLevel(logging.ERROR)
+logging.getLogger('distributed.scheduler').setLevel(logging.ERROR)
+logging.getLogger('distributed.nanny').setLevel(logging.ERROR)
+logging.getLogger('distributed.core').setLevel(logging.ERROR)
+logging.getLogger('sollol.vram_monitor').setLevel(logging.ERROR)
+logging.getLogger('sollol.pool').setLevel(logging.ERROR)
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,6 +98,7 @@ def load_config():
         "quality_threshold": 0.7,
         "max_quality_retries": 2,
         "flockparser_enabled": False,
+        "dashboard_verbose": True,  # Show detailed dashboard startup logs
         "model": "llama3.2",
         "synthesis_model": None,  # Optional larger model for Phase 4 (e.g., "llama3.1:70b")
         "strategy": None,  # None = auto, or ExecutionMode value string
@@ -129,6 +168,10 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
     # FlockParser RAG settings
     flockparser_enabled = config.get("flockparser_enabled", False)
+
+    # Dashboard settings
+    dashboard_verbose = config.get("dashboard_verbose", True)
+    dashboard_enable_dask = config.get("dashboard_enable_dask", False)
 
     # Helper to auto-save settings (defined early so it can be used below)
     def update_config(**kwargs):
@@ -262,6 +305,8 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
         print_command("metrics", "Show last query metrics")
         print_command("sollol", "Show SOLLOL routing stats")
         print_command("dashboard", "Launch SOLLOL web dashboard (port 8080)")
+        dask_status = "[ON]" if dashboard_enable_dask else "[OFF]"
+        print_command(f"dask on/off {dask_status}", "Toggle Dask dashboard observability")
         print_command("benchmark", "Run auto-benchmark")
         if current_mode == "dask":
             print_command("dask", "Show Dask cluster info")
@@ -537,6 +582,46 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     else:
                         print("❌ Use 'rag on' or 'rag off'\n")
 
+            # Dashboard verbose toggle
+            elif command == 'verbose':
+                if len(parts) < 2:
+                    print(f"❌ Usage: verbose [on|off]\n")
+                else:
+                    toggle = parts[1].lower()
+                    if toggle == 'on':
+                        dashboard_verbose = True
+                        update_config(dashboard_verbose=True)
+                        print("✅ Dashboard verbose mode ENABLED")
+                        print("   Will show detailed startup logs\n")
+                    elif toggle == 'off':
+                        dashboard_verbose = False
+                        update_config(dashboard_verbose=False)
+                        print("✅ Dashboard verbose mode DISABLED")
+                        print("   Will show minimal output\n")
+                    else:
+                        print("❌ Use 'verbose on' or 'verbose off'\n")
+
+            # Dashboard Dask toggle
+            elif command == 'dask':
+                if len(parts) < 2:
+                    print(f"❌ Usage: dask [on|off]\n")
+                else:
+                    toggle = parts[1].lower()
+                    if toggle == 'on':
+                        dashboard_enable_dask = True
+                        update_config(dashboard_enable_dask=True)
+                        print("✅ Dask dashboard ENABLED")
+                        print("   ⚠️  Note: Dask workers generate verbose warnings (known issue)")
+                        print("   Restart and run 'dashboard' to apply changes\n")
+                    elif toggle == 'off':
+                        dashboard_enable_dask = False
+                        update_config(dashboard_enable_dask=False)
+                        print("✅ Dask dashboard DISABLED")
+                        print("   Ray observability still available")
+                        print("   Restart and run 'dashboard' to apply changes\n")
+                    else:
+                        print("❌ Use 'dask on' or 'dask off'\n")
+
             # Distributed mode selection
             elif command == 'distributed':
                 if len(parts) < 2:
@@ -749,7 +834,8 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     "GPU Nodes": len(global_registry.get_gpu_nodes()),
                     "Task Distribution": 'ON' if task_distribution_enabled else 'OFF',
                     "Model Sharding": 'ON' if model_sharding_enabled else 'OFF',
-                    "RPC Backends": len(rpc_backends) if model_sharding_enabled else 'N/A'
+                    "RPC Backends": len(rpc_backends) if model_sharding_enabled else 'N/A',
+                    "Dashboard Dask": 'ON' if dashboard_enable_dask else 'OFF'
                 }
                 if current_mode == 'dask' and executor:
                     status_data["Dask Workers"] = len(executor.client.scheduler_info()['workers'])
@@ -809,15 +895,24 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         ray_dashboard_port=8265,
                         dask_dashboard_port=8787,
                         dashboard_port=8080,
-                        enable_dask=True,  # Enable Dask dashboard
+                        enable_dask=dashboard_enable_dask,  # Configurable Dask dashboard
                     )
 
-                    logging.info("📊 Using NEW SOLLOL UnifiedDashboard with:")
-                    logging.info("   • Universal network observability")
-                    logging.info("   • Application tracking")
-                    logging.info("   • Ray dashboard (port 8265)")
-                    logging.info("   • Dask dashboard (port 8787)")
-                    logging.info("   • WebSocket event streams")
+                    # Re-suppress distributed logging after Dask client creation
+                    # (Dask resets logging when dashboard client is created)
+                    logging.getLogger('distributed').setLevel(logging.ERROR)
+                    logging.getLogger('distributed.worker').setLevel(logging.ERROR)
+                    logging.getLogger('distributed.scheduler').setLevel(logging.ERROR)
+                    logging.getLogger('distributed.nanny').setLevel(logging.ERROR)
+                    logging.getLogger('distributed.core').setLevel(logging.ERROR)
+
+                    if dashboard_verbose:
+                        logging.info("📊 Using NEW SOLLOL UnifiedDashboard with:")
+                        logging.info("   • Universal network observability")
+                        logging.info("   • Application tracking")
+                        logging.info("   • Ray dashboard (port 8265)")
+                        logging.info("   • Dask dashboard (port 8787)")
+                        logging.info("   • WebSocket event streams")
 
                     # Start dashboard in background thread
                     import threading

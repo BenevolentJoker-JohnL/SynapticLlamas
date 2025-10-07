@@ -433,7 +433,7 @@ cd SynapticLlamas
 pip install -r requirements.txt
 ```
 
-**Note:** SynapticLlamas now uses [SOLLOL](https://github.com/BenevolentJoker-JohnL/SOLLOL) as a package dependency (v0.9.7+) for intelligent routing and distributed inference capabilities.
+**Note:** SynapticLlamas now uses [SOLLOL](https://github.com/BenevolentJoker-JohnL/SOLLOL) as a package dependency (v0.9.10+) for intelligent routing and distributed inference capabilities.
 
 **Prerequisites:**
 - Python 3.8+
