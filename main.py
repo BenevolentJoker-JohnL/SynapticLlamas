@@ -171,7 +171,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
     # Dashboard settings
     dashboard_verbose = config.get("dashboard_verbose", True)
-    dashboard_enable_dask = config.get("dashboard_enable_dask", False)
+    dashboard_enable_dask = config.get("dashboard_enable_dask", True)  # Uses threaded workers - logging works!
 
     # Helper to auto-save settings (defined early so it can be used below)
     def update_config(**kwargs):
@@ -611,7 +611,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         dashboard_enable_dask = True
                         update_config(dashboard_enable_dask=True)
                         print("✅ Dask dashboard ENABLED")
-                        print("   ⚠️  Note: Dask workers generate verbose warnings (known issue)")
+                        print("   ℹ️  Using threaded workers (no CLI spam)")
                         print("   Restart and run 'dashboard' to apply changes\n")
                     elif toggle == 'off':
                         dashboard_enable_dask = False
