@@ -976,12 +976,13 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         print(f"❌ Node not found: {url}\n")
 
             elif command == 'discover':
+                # Discover Ollama nodes
                 if len(parts) > 1:
                     # User specified CIDR - use network scanning
                     cidr = parts[1]
-                    print(f"📡 Scanning {cidr}...\n")
+                    print(f"📡 Scanning {cidr} for Ollama nodes...\n")
                     discovered = global_registry.discover_nodes(cidr)
-                    print(f"✅ Discovered {len(discovered)} nodes\n")
+                    print(f"✅ Discovered {len(discovered)} Ollama nodes\n")
 
                     # Auto-save discovered nodes
                     if len(discovered) > 0:
@@ -1024,6 +1025,24 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             logger.info(f"Auto-saved {len(global_registry.nodes)} nodes to {NODES_CONFIG_PATH}")
                         except Exception as e:
                             logger.warning(f"Failed to auto-save nodes: {e}")
+
+                # Also discover RPC backends
+                print("🔍 Scanning for RPC backends...\n")
+                from sollol.rpc_discovery import auto_discover_rpc_backends
+                discovered_rpc = auto_discover_rpc_backends()
+                if discovered_rpc:
+                    added_count = 0
+                    for backend in discovered_rpc:
+                        if backend not in rpc_backends:
+                            rpc_backends.append(backend)
+                            added_count += 1
+                    if added_count > 0:
+                        print(f"✅ Discovered {added_count} new RPC backend(s)")
+                        for backend in discovered_rpc[-added_count:]:
+                            print(f"   • {backend['host']}:{backend['port']}")
+                        print()
+                else:
+                    print("ℹ️  No RPC backends discovered\n")
 
             elif command == 'health':
                 print("🏥 Running health checks...\n")
