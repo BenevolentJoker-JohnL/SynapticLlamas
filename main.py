@@ -61,6 +61,7 @@ def load_config():
         "max_quality_retries": 2,
         "flockparser_enabled": False,
         "model": "llama3.2",
+        "synthesis_model": None,  # Optional larger model for Phase 4 (e.g., "llama3.1:70b")
         "strategy": None,  # None = auto, or ExecutionMode value string
 
         # Distribution settings - TWO distinct modes:
@@ -116,6 +117,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
             current_strategy = None
 
     current_model = config.get("model", model)
+    synthesis_model = config.get("synthesis_model", None)  # Optional large model for synthesis
     collaborative_mode = config.get("collaborative_mode", False)
     refinement_rounds = config.get("refinement_rounds", 1)
     agent_timeout = config.get("agent_timeout", 300)
@@ -213,9 +215,11 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
         console.print("\n[bold red]🤝 COLLABORATION MODE[/bold red]")
         collab_status = "[green]ON[/green]" if collaborative_mode else "[dim]OFF[/dim]"
+        synthesis_status = f"[cyan]{synthesis_model}[/cyan]" if synthesis_model else "[dim]None[/dim]"
         print_command(f"collab on/off [{collab_status}]", "Toggle collaborative workflow")
         print_command(f"refine <n> [{refinement_rounds}]", "Set refinement rounds (0-5)")
         print_command(f"timeout <sec> [{agent_timeout}s]", "Set inference timeout")
+        print_command(f"synthesis <model> [{synthesis_status}]", "Set large model for Phase 4 synthesis")
 
         console.print("\n[bold red]🗳️  AST QUALITY VOTING[/bold red]")
         ast_status = "[green]ON[/green]" if ast_voting_enabled else "[dim]OFF[/dim]"
@@ -232,9 +236,9 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
         model_status = "Model: " + ("[green]ON[/green]" if model_sharding_enabled else "[dim]OFF[/dim]")
         console.print(f"[dim white]Current: {task_status}, {model_status}[/dim white]")
 
-        print_command(f"distributed task", "Enable task distribution (parallel agents across Ollama nodes)")
-        print_command(f"distributed model", "Enable model sharding (split large models via RPC)")
-        print_command(f"distributed both", "Enable BOTH task distribution + model sharding")
+        print_command(f"distributed task", "Ollama pool only (parallel agents, small models)")
+        print_command(f"distributed model", "RPC sharding only (large models split across servers)")
+        print_command(f"distributed both", "🔀 HYBRID: Small→Ollama, Large→RPC")
         print_command(f"distributed off", "Disable all distribution modes")
 
         console.print(f"\n[cyan]RPC Backend Management:[/cyan]")
@@ -249,7 +253,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
         print_command("nodes", "List Ollama nodes")
         print_command("add <url>", "Add Ollama node")
         print_command("remove <url>", "Remove Ollama node")
-        print_command("discover [cidr]", "Auto-detect and scan network")
+        print_command("discover [cidr]", "Scan network or specific CIDR for nodes")
         print_command("health", "Health check all nodes")
         print_command("save/load <file>", "Save/load node config")
 
@@ -280,19 +284,35 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
     # Auto-discover Ollama nodes if in distributed mode
     if current_mode == "distributed":
         try:
-            from network_utils import suggest_scan_ranges
-            logger.info("🔍 Auto-discovering Ollama nodes on network...")
+            from sollol import discover_ollama_nodes
+            logger.info("🔍 Auto-discovering known Ollama nodes (using SOLLOL)...")
             initial_count = len(global_registry.nodes)
-            ranges = suggest_scan_ranges()
-            if ranges:
-                for cidr in ranges:
-                    global_registry.discover_nodes(cidr)
 
-                discovered_count = len(global_registry.nodes) - initial_count
-                if discovered_count > 0:
-                    print_success(f"Auto-discovered {discovered_count} additional Ollama node(s)")
-                    # Save updated node list
-                    global_registry.save_config(NODES_CONFIG_PATH)
+            # Use SOLLOL's fast discovery (env vars + localhost)
+            discovered_nodes = discover_ollama_nodes(
+                timeout=1.0,
+                exclude_localhost=False,
+                auto_resolve_docker=True
+            )
+
+            # Add discovered nodes to registry
+            for node_info in discovered_nodes:
+                url = f"http://{node_info['host']}:{node_info['port']}"
+                try:
+                    global_registry.add_node(url, auto_probe=True)
+                except Exception as e:
+                    logger.debug(f"Failed to add {url}: {e}")
+
+            discovered_count = len(global_registry.nodes) - initial_count
+            if discovered_count > 0:
+                print_success(f"Auto-discovered {discovered_count} additional Ollama node(s)")
+                # Save updated node list
+                global_registry.save_config(NODES_CONFIG_PATH)
+
+            # Hint to user about network scanning
+            if len(global_registry.nodes) <= 1:
+                logger.info(f"💡 Only localhost found. Use 'discover' or set OLLAMA_NODES env var for network nodes")
+
             logger.info(f"✅ Total Ollama nodes available: {len(global_registry.nodes)}")
         except Exception as e:
             logger.warning(f"Ollama node auto-discovery failed: {e}")
@@ -406,6 +426,29 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     except ValueError:
                         print("❌ Please provide a number\n")
 
+            # Synthesis model setting
+            elif command == 'synthesis':
+                if len(parts) < 2:
+                    if synthesis_model:
+                        print(f"Current synthesis model: {synthesis_model}")
+                        print(f"Usage: synthesis <model_name> (e.g., llama3.1:70b)\n")
+                        print(f"       synthesis none (to disable)\n")
+                    else:
+                        print("No synthesis model set")
+                        print(f"Usage: synthesis <model_name> (e.g., llama3.1:70b)\n")
+                else:
+                    model_name = parts[1]
+                    if model_name.lower() == 'none':
+                        synthesis_model = None
+                        update_config(synthesis_model=None)
+                        print("✅ Synthesis model disabled (will use same model for all phases)\n")
+                    else:
+                        synthesis_model = model_name
+                        update_config(synthesis_model=model_name)
+                        print(f"✅ Synthesis model set to: {model_name}")
+                        print(f"   Phases 1-3: {current_model}")
+                        print(f"   Phase 4: {synthesis_model}\n")
+
             # Timeout setting
             elif command == 'timeout':
                 if len(parts) < 2:
@@ -510,12 +553,15 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         task_distribution_enabled = True
                         model_sharding_enabled = False
                         current_model = "llama3.2"  # Use small model for task distribution
-                        update_config(task_distribution_enabled=True, model_sharding_enabled=False, model="llama3.2")
+                        synthesis_model = None  # No synthesis model in task-only mode
+                        update_config(task_distribution_enabled=True, model_sharding_enabled=False,
+                                    model="llama3.2", synthesis_model=None)
                         global_orchestrator = None
                         print("✅ TASK DISTRIBUTION MODE")
                         print(f"   Using {ollama_nodes_count} Ollama nodes for load balancing")
                         print("   Agents execute in parallel across Ollama nodes")
-                        print("   Model: llama3.2 (optimized for task distribution)")
+                        print("   Model: llama3.2 (all phases)")
+                        print("   Synthesis model: None")
                         print("   Model sharding: DISABLED\n")
 
                     elif mode == 'model':
@@ -526,11 +572,14 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             task_distribution_enabled = False
                             model_sharding_enabled = True
                             current_model = "llama3.1:70b"  # Use large model for sharding
-                            update_config(task_distribution_enabled=False, model_sharding_enabled=True, model="llama3.1:70b")
+                            synthesis_model = None  # Same model for all phases in sharding-only mode
+                            update_config(task_distribution_enabled=False, model_sharding_enabled=True,
+                                        model="llama3.1:70b", synthesis_model=None)
                             global_orchestrator = None
                             print("✅ MODEL SHARDING MODE")
                             print(f"   Using {len(rpc_backends)} RPC backend(s)")
-                            print("   Model: llama3.1:70b (distributed via llama.cpp)")
+                            print("   Model: llama3.1:70b (all phases, sharded via RPC)")
+                            print("   Synthesis model: None")
                             print("   Large models (>13B) split via llama.cpp")
                             print("   Task distribution: DISABLED\n")
 
@@ -541,15 +590,18 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         else:
                             task_distribution_enabled = True
                             model_sharding_enabled = True
-                            current_model = "llama3.2"  # Default to small model for task distribution
-                            update_config(task_distribution_enabled=True, model_sharding_enabled=True, model="llama3.2")
+                            current_model = "llama3.2"  # Small model for phases 1-3
+                            synthesis_model = "llama3.1:70b"  # Large model for phase 4
+                            update_config(task_distribution_enabled=True, model_sharding_enabled=True,
+                                        model="llama3.2", synthesis_model="llama3.1:70b")
                             global_orchestrator = None
-                            print("✅ BOTH MODES ENABLED")
-                            print(f"   Task distribution: {ollama_nodes_count} Ollama nodes (parallel agents)")
-                            print(f"   Model sharding: {len(rpc_backends)} RPC backends (large models)")
-                            print(f"   Model: llama3.2 (use 'model llama3.1:70b' to switch to sharded mode)")
-                            print("   → Small models use task distribution")
-                            print("   → Large models (>13B) use model sharding\n")
+                            print("✅ HYBRID MODE (Task Distribution + Model Sharding)")
+                            print(f"   Task distribution: {ollama_nodes_count} Ollama nodes")
+                            print(f"   Model sharding: {len(rpc_backends)} RPC backends")
+                            print(f"   Phases 1-3 model: llama3.2 → Ollama pool (parallel agents)")
+                            print(f"   Phase 4 synthesis: llama3.1:70b → RPC sharding")
+                            print("   🔀 HybridRouter intelligently routes based on model size")
+                            print("   💡 Use 'synthesis <model>' to change synthesis model\n")
 
                     elif mode == 'off':
                         task_distribution_enabled = False
@@ -688,6 +740,7 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                 status_data = {
                     "Mode": current_mode,
                     "Model": current_model,
+                    "Synthesis Model": synthesis_model if synthesis_model else 'None (same as model)',
                     "Strategy": current_strategy.value if current_strategy else 'auto',
                     "Collaboration": 'ON' if collaborative_mode else 'OFF',
                     "Refinement Rounds": refinement_rounds if collaborative_mode else 'N/A',
@@ -746,31 +799,43 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     logger.info("📡 Dashboard will monitor llama.cpp backend")
 
                 def run_dashboard_thread():
-                    # Import here to avoid circular imports
-                    sys.path.insert(0, os.getcwd())
-                    from dashboard_server import run_dashboard
-                    run_dashboard(
-                        host='0.0.0.0',
-                        port=8080,
-                        node_registry=current_registry,
-                        sollol_lb=current_lb,
-                        hybrid_router_ref=current_hybrid_router,
-                        rpc_registry=global_rpc_registry
+                    # Use NEW SOLLOL UnifiedDashboard with universal observability
+                    from sollol import UnifiedDashboard, DashboardClient
+
+                    # Register SynapticLlamas with the dashboard
+                    client = DashboardClient(
+                        app_name="SynapticLlamas",
+                        router_type="HybridRouter",
+                        version="1.0.0",
+                        dashboard_url="http://localhost:8080",
+                        metadata={"nodes": len(current_registry) if current_registry else 0}
                     )
+
+                    # Create SOLLOL UnifiedDashboard with NEW features
+                    dashboard = UnifiedDashboard(
+                        router=current_hybrid_router,
+                        ray_dashboard_port=8265,
+                        dask_dashboard_port=8787,
+                        dashboard_port=8080,
+                        enable_dask=True,  # Enable Dask dashboard
+                    )
+
+                    logging.info("📊 Using NEW SOLLOL UnifiedDashboard with:")
+                    logging.info("   • Universal network observability")
+                    logging.info("   • Application tracking")
+                    logging.info("   • Ray dashboard (port 8265)")
+                    logging.info("   • Dask dashboard (port 8787)")
+                    logging.info("   • WebSocket event streams")
+
+                    dashboard.run(host='0.0.0.0', debug=False)
 
                 dashboard_thread = threading.Thread(target=run_dashboard_thread, daemon=True, name="DashboardServer")
                 dashboard_thread.start()
 
                 import time
-                time.sleep(1)  # Give server time to start
+                time.sleep(2)  # Give server time to start
 
-                # Connect main app logging to dashboard log queue
-                from dashboard_server import log_queue, QueueLogHandler
-                root_logger = logging.getLogger()
-                queue_handler = QueueLogHandler(log_queue)
-                queue_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-                root_logger.addHandler(queue_handler)
-                logging.info("📊 Dashboard logging connected - all app logs will stream to dashboard")
+                logging.info("📊 NEW SOLLOL Dashboard features enabled!")
 
                 print("✅ Dashboard started in background!")
                 print(f"   Tracking {len(current_registry)} nodes from your session")
@@ -895,58 +960,63 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
             elif command == 'discover':
                 if len(parts) > 1:
-                    # User specified CIDR
+                    # User specified CIDR - use network scanning
                     cidr = parts[1]
+                    print(f"📡 Scanning {cidr}...\n")
+                    discovered = global_registry.discover_nodes(cidr)
+                    print(f"✅ Discovered {len(discovered)} nodes\n")
+
+                    # Auto-save discovered nodes
+                    if len(discovered) > 0:
+                        try:
+                            global_registry.save_config(NODES_CONFIG_PATH)
+                            logger.info(f"Auto-saved {len(global_registry.nodes)} nodes to {NODES_CONFIG_PATH}")
+                        except Exception as e:
+                            logger.warning(f"Failed to auto-save nodes: {e}")
                 else:
-                    # Auto-detect network
-                    from network_utils import detect_local_network, suggest_scan_ranges
+                    # Auto-detect and scan local network
+                    from network_utils import suggest_scan_ranges
+                    print(f"🔍 Detecting network and scanning for Ollama nodes...\n")
 
                     ranges = suggest_scan_ranges()
-
-                    if ranges:
-                        print(f"🔍 Auto-detected network ranges:")
-                        for i, r in enumerate(ranges, 1):
-                            print(f"  {i}. {r}")
-
-                        if len(ranges) == 1:
-                            cidr = ranges[0]
-                            print(f"\n📡 Scanning {cidr}...\n")
-                        else:
-                            print(f"\n📡 Scanning all detected ranges...\n")
-                            # Scan all ranges
-                            total_discovered = []
-                            for r in ranges:
-                                discovered = global_registry.discover_nodes(r)
-                                total_discovered.extend(discovered)
-                            print(f"✅ Discovered {len(total_discovered)} nodes total\n")
-
-                            # Auto-save discovered nodes
-                            if len(total_discovered) > 0:
-                                try:
-                                    global_registry.save_config(NODES_CONFIG_PATH)
-                                    logger.info(f"Auto-saved {len(global_registry.nodes)} nodes to {NODES_CONFIG_PATH}")
-                                except Exception as e:
-                                    logger.warning(f"Failed to auto-save nodes: {e}")
-                            continue
-                    else:
+                    if not ranges:
                         print("❌ Could not auto-detect network. Please specify CIDR manually.")
-                        print("   Usage: discover 192.168.1.0/24\n")
+                        print("   Usage: discover 10.9.66.0/24\n")
                         continue
 
-                discovered = global_registry.discover_nodes(cidr)
-                print(f"✅ Discovered {len(discovered)} nodes\n")
+                    print(f"📡 Detected network ranges:")
+                    for r in ranges:
+                        print(f"   • {r}")
+                    print()
 
-                # Auto-save discovered nodes
-                if len(discovered) > 0:
-                    try:
-                        global_registry.save_config(NODES_CONFIG_PATH)
-                        logger.info(f"Auto-saved {len(global_registry.nodes)} nodes to {NODES_CONFIG_PATH}")
-                    except Exception as e:
-                        logger.warning(f"Failed to auto-save nodes: {e}")
+                    # Scan all ranges
+                    initial_count = len(global_registry.nodes)
+                    total_discovered = []
+                    for r in ranges:
+                        print(f"Scanning {r}...")
+                        discovered = global_registry.discover_nodes(r, timeout=1.0, max_workers=100)
+                        total_discovered.extend(discovered)
+
+                    discovered_count = len(global_registry.nodes) - initial_count
+                    print(f"\n✅ Discovered {discovered_count} new node(s)\n")
+
+                    # Auto-save discovered nodes
+                    if discovered_count > 0:
+                        try:
+                            global_registry.save_config(NODES_CONFIG_PATH)
+                            logger.info(f"Auto-saved {len(global_registry.nodes)} nodes to {NODES_CONFIG_PATH}")
+                        except Exception as e:
+                            logger.warning(f"Failed to auto-save nodes: {e}")
 
             elif command == 'health':
                 print("🏥 Running health checks...\n")
-                results = global_registry.health_check_all()
+                # Use faster timeouts with auto-removal of failed nodes
+                results = global_registry.health_check_all(
+                    timeout=2.0,
+                    connection_timeout=1.0,
+                    auto_remove=True,
+                    max_failures=3
+                )
                 healthy = sum(1 for v in results.values() if v)
                 print(f"✅ {healthy}/{len(results)} nodes healthy\n")
 
@@ -1011,7 +1081,8 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             timeout=agent_timeout,
                             enable_ast_voting=ast_voting_enabled,
                             quality_threshold=quality_threshold,
-                            max_quality_retries=max_quality_retries
+                            max_quality_retries=max_quality_retries,
+                            synthesis_model=synthesis_model
                         )
                 else:
                     # Standard mode doesn't support collaborative yet
@@ -1029,7 +1100,8 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             timeout=agent_timeout,
                             enable_ast_voting=ast_voting_enabled,
                             quality_threshold=quality_threshold,
-                            max_quality_retries=max_quality_retries
+                            max_quality_retries=max_quality_retries,
+                            synthesis_model=synthesis_model
                         )
                     else:
                         result = run_parallel_agents(user_input, model=current_model, max_workers=workers)
