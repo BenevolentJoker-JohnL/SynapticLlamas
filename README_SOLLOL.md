@@ -1,6 +1,6 @@
 # SynapticLlamas + SOLLOL Integration
 
-> **Note:** As of v0.3.6, SynapticLlamas uses SOLLOL as a package dependency instead of an embedded copy. This eliminates code duplication and ensures bug fixes benefit both projects. See [SOLLOL on GitHub](https://github.com/BenevolentJoker-JohnL/SOLLOL).
+> **Note:** As of v0.9.7, SynapticLlamas uses SOLLOL as a package dependency instead of an embedded copy. This eliminates code duplication and ensures bug fixes benefit both projects. See [SOLLOL on GitHub](https://github.com/BenevolentJoker-JohnL/SOLLOL).
 
 ## Overview
 

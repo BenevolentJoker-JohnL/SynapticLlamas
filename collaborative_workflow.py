@@ -36,12 +36,13 @@ class CollaborativeWorkflow:
     def __init__(self, model: str = "llama3.2", max_refinement_rounds: int = 1,
                  distributed: bool = False, node_urls: List[str] = None, timeout: int = 300,
                  enable_ast_voting: bool = False, quality_threshold: float = 0.7,
-                 max_quality_retries: int = 2, load_balancer=None):
+                 max_quality_retries: int = 2, load_balancer=None, synthesis_model: Optional[str] = None,
+                 hybrid_router=None):
         """
         Initialize collaborative workflow.
 
         Args:
-            model: Ollama model to use
+            model: Ollama model to use for research, critique, refinement (e.g., "llama3.2:8b")
             max_refinement_rounds: Number of refinement iterations
             distributed: Use distributed nodes for acceleration
             node_urls: List of Ollama node URLs for distribution
@@ -50,8 +51,12 @@ class CollaborativeWorkflow:
             quality_threshold: Minimum quality score to pass (0.0-1.0)
             max_quality_retries: Maximum re-refinement attempts for quality
             load_balancer: SOLLOL load balancer for intelligent routing (optional)
+            synthesis_model: Optional larger model for final synthesis (e.g., "llama3.1:70b")
+                            If None, uses same model as other phases
+            hybrid_router: HybridRouter for intelligent small/large model routing (optional)
         """
         self.model = model
+        self.synthesis_model = synthesis_model or model  # Use synthesis model or fall back to base model
         self.max_refinement_rounds = max_refinement_rounds
         self.conversation_history: List[AgentMessage] = []
         self.distributed = distributed
@@ -59,10 +64,12 @@ class CollaborativeWorkflow:
         self.timeout = timeout
         self.enable_ast_voting = enable_ast_voting
         self.load_balancer = load_balancer
+        self.hybrid_router = hybrid_router
 
         if enable_ast_voting:
+            # Use synthesis model for quality voting (matches synthesis phase model)
             self.ast_voting = ASTQualityVoting(
-                model=model,
+                model=self.synthesis_model,
                 threshold=quality_threshold,
                 max_retries=max_quality_retries,
                 timeout=timeout
@@ -87,17 +94,24 @@ class CollaborativeWorkflow:
         self.conversation_history = []
         phase_times = []
 
-        # Initialize agents
+        # Initialize agents - Editor uses synthesis model for final output
         researcher = Researcher(self.model, timeout=self.timeout)
         critic = Critic(self.model, timeout=self.timeout)
-        editor = Editor(self.model, timeout=self.timeout)
+        editor = Editor(self.synthesis_model, timeout=self.timeout)  # Use larger model for synthesis
 
         # Set Ollama URL for all agents
         researcher.ollama_url = ollama_url
         critic.ollama_url = ollama_url
         editor.ollama_url = ollama_url
 
-        # Inject SOLLOL load balancer if available
+        # Inject HybridRouter for intelligent small/large model routing
+        if self.hybrid_router is not None:
+            researcher._hybrid_router_sync = self.hybrid_router
+            critic._hybrid_router_sync = self.hybrid_router
+            editor._hybrid_router_sync = self.hybrid_router
+            logger.info(f"🔀 Using HybridRouter: {self.model} (phases 1-3) → {self.synthesis_model} (phase 4)")
+
+        # Inject SOLLOL load balancer if available (fallback if no HybridRouter)
         if self.load_balancer is not None:
             researcher._load_balancer = self.load_balancer
             critic._load_balancer = self.load_balancer

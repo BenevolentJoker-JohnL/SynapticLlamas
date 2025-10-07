@@ -70,7 +70,8 @@ class DistributedOrchestrator:
 
         if enable_distributed_inference:
             try:
-                from sollol.hybrid_router import HybridRouter
+                # Use RayHybridRouter for Ray+Dask distributed execution
+                from sollol.ray_hybrid_router import RayHybridRouter
                 from sollol.pool import OllamaPool
                 from hybrid_router_sync import HybridRouterSync
 
@@ -86,19 +87,21 @@ class DistributedOrchestrator:
                 else:
                     logger.info("⏭️  Task distribution disabled: Using only RPC model sharding")
 
-                # Create hybrid router
-                self.hybrid_router = HybridRouter(
+                # Create RayHybridRouter (uses Ray for parallel pool execution)
+                self.hybrid_router = RayHybridRouter(
                     ollama_pool=ollama_pool,  # None if task distribution disabled
                     rpc_backends=rpc_backends,
-                    enable_distributed=True
+                    enable_distributed=True,
+                    pool_size=5,  # Ray parallel pool size
                 )
 
                 # Create sync wrapper for agents
                 self.hybrid_router_sync = HybridRouterSync(self.hybrid_router)
 
+                logger.info(f"✨ Ray+Dask distributed routing enabled")
                 logger.info(f"🔗 llama.cpp model sharding enabled with {len(rpc_backends) if rpc_backends else 0} RPC backends")
             except Exception as e:
-                logger.error(f"Failed to initialize HybridRouter: {e}")
+                logger.error(f"Failed to initialize RayHybridRouter: {e}")
                 self.enable_distributed_inference = False
 
         # Initialize FlockParser RAG adapter
@@ -142,17 +145,23 @@ class DistributedOrchestrator:
             timeout: int = 300,
             enable_ast_voting: bool = False,
             quality_threshold: float = 0.7,
-            max_quality_retries: int = 2) -> dict:
+            max_quality_retries: int = 2,
+            synthesis_model: str = None) -> dict:
         """
         Run agents with intelligent distribution.
 
         Args:
             input_data: Input text/prompt
-            model: Ollama model to use
+            model: Ollama model to use for phases 1-3 (e.g., "llama3.2:8b")
             execution_mode: Force specific execution mode (None = adaptive)
             routing_strategy: Force routing strategy (None = adaptive)
             collaborative: Use collaborative workflow instead of parallel
             refinement_rounds: Number of refinement iterations (collaborative mode)
+            timeout: Inference timeout in seconds
+            enable_ast_voting: Enable AST quality voting
+            quality_threshold: Minimum quality score (0.0-1.0)
+            max_quality_retries: Maximum quality re-refinement attempts
+            synthesis_model: Optional larger model for phase 4 synthesis (e.g., "llama3.1:70b")
 
         Returns:
             dict with 'result', 'metrics', 'raw_json', 'strategy_used'
@@ -183,7 +192,7 @@ class DistributedOrchestrator:
             else:
                 logger.info(f"📍 Single-node collaborative mode")
 
-            # Run collaborative workflow with SOLLOL load balancer
+            # Run collaborative workflow with SOLLOL load balancer and HybridRouter
             workflow = CollaborativeWorkflow(
                 model=model,
                 max_refinement_rounds=refinement_rounds,
@@ -193,7 +202,9 @@ class DistributedOrchestrator:
                 enable_ast_voting=enable_ast_voting,
                 quality_threshold=quality_threshold,
                 max_quality_retries=max_quality_retries,
-                load_balancer=self.load_balancer if self.use_sollol else None
+                load_balancer=self.load_balancer if self.use_sollol else None,
+                synthesis_model=synthesis_model,
+                hybrid_router=self.hybrid_router_sync if self.hybrid_router_sync else None
             )
             # Pass http://localhost:11434 as default, but agents will use load balancer if available
             workflow_result = workflow.run(input_data, ollama_url="http://localhost:11434")

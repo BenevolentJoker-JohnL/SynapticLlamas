@@ -35,6 +35,7 @@ class NodeMetrics:
     last_health_check: Optional[datetime] = None
     is_healthy: bool = True
     load_score: float = 0.0  # 0-1, lower is better
+    consecutive_failures: int = 0  # Track consecutive health check failures
 
     # SOLLOL compatibility properties
     @property
@@ -72,22 +73,31 @@ class OllamaNode:
         self.metrics = NodeMetrics()
         self._last_request_times = []  # Rolling window for avg calculation
 
-    def health_check(self, timeout: float = 3.0) -> bool:
+    def health_check(self, timeout: float = 2.0, connection_timeout: float = 1.0) -> bool:
         """
         Check if node is healthy and responsive.
+
+        Args:
+            timeout: Total timeout (default 2s)
+            connection_timeout: Connection timeout (default 1s)
 
         Returns:
             True if healthy, False otherwise
         """
         try:
             start = time.time()
-            response = requests.get(f"{self.url}/api/tags", timeout=timeout)
+            # Use separate connection and read timeouts for faster failure detection
+            response = requests.get(
+                f"{self.url}/api/tags",
+                timeout=(connection_timeout, timeout)
+            )
             elapsed = time.time() - start
 
             if response.status_code == 200:
                 self.metrics.last_response_time = elapsed
                 self.metrics.last_health_check = datetime.now()
                 self.metrics.is_healthy = True
+                self.metrics.consecutive_failures = 0  # Reset on success
 
                 # Update capabilities
                 data = response.json()
@@ -96,12 +106,27 @@ class OllamaNode:
                 return True
             else:
                 self.metrics.is_healthy = False
+                self.metrics.consecutive_failures += 1
                 return False
 
+        except requests.exceptions.ConnectionError as e:
+            # Fast-fail on connection errors (no route to host, etc.)
+            logger.warning(f"Connection error for {self.name}: {e}")
+            self.metrics.is_healthy = False
+            self.metrics.last_health_check = datetime.now()
+            self.metrics.consecutive_failures += 1
+            return False
+        except requests.exceptions.Timeout as e:
+            logger.warning(f"Timeout for {self.name}: {e}")
+            self.metrics.is_healthy = False
+            self.metrics.last_health_check = datetime.now()
+            self.metrics.consecutive_failures += 1
+            return False
         except Exception as e:
             logger.warning(f"Health check failed for {self.name}: {e}")
             self.metrics.is_healthy = False
             self.metrics.last_health_check = datetime.now()
+            self.metrics.consecutive_failures += 1
             return False
 
     def probe_capabilities(self, timeout: float = 5.0) -> bool:

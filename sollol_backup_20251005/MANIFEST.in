@@ -1,0 +1,4 @@
+include README.md
+include LICENSE
+include setup_llama_cpp.py
+recursive-include sollol *.py

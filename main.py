@@ -827,17 +827,20 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     )
                     server_thread.start()
 
-                    # Wait for server to start
+                    # Wait for server to start, then register
                     time.sleep(2)
 
                     # NOW register SynapticLlamas with the dashboard (after server is ready)
+                    logging.info("📱 Registering SynapticLlamas with dashboard...")
                     client = DashboardClient(
                         app_name="SynapticLlamas",
-                        router_type="HybridRouter",
+                        router_type="RayHybridRouter",
                         version="1.0.0",
                         dashboard_url="http://localhost:8080",
-                        metadata={"nodes": len(current_registry) if current_registry else 0}
+                        metadata={"nodes": len(current_registry) if current_registry else 0},
+                        auto_register=True
                     )
+                    logging.info(f"✅ Registered with dashboard: SynapticLlamas ({client.app_id})")
 
                     # Keep thread alive (server_thread is daemon, so it will die when main thread dies)
                     while True:

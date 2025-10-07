@@ -9,4 +9,4 @@ flask-sock
 waitress>=3.0.0
 asyncio>=3.4.3
 # SOLLOL - Intelligent load balancing and distributed inference
-sollol>=0.3.6
+sollol>=0.9.7

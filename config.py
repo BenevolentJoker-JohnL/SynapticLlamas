@@ -16,7 +16,10 @@ class NetworkConfig:
     discovery_timeout: int = 2
     discovery_workers: int = 50
     health_check_interval: int = 30
+    health_check_timeout: float = 2.0  # Fast timeout for health checks
+    connection_timeout: float = 1.0  # Connection-specific timeout
     request_timeout: int = 120
+    max_consecutive_failures: int = 3  # Remove node after N failures
 
 
 @dataclass

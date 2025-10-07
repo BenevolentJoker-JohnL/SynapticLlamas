@@ -125,18 +125,48 @@ def get_all_network_interfaces() -> List[dict]:
 def suggest_scan_ranges() -> List[str]:
     """
     Suggest network ranges to scan based on local interfaces.
+    Filters out Docker/VPN/virtual networks and limits large subnets.
 
     Returns:
         List of CIDR ranges to scan
     """
     ranges = []
 
+    # Networks to skip (Docker, VPNs, virtual interfaces)
+    skip_prefixes = ['172.17.', '172.18.', '172.19.', '10.0.2.', '192.168.122.']
+    skip_interfaces = ['docker', 'veth', 'br-', 'virbr']
+
     # Try to get all interfaces
     interfaces = get_all_network_interfaces()
 
     for iface in interfaces:
-        if iface.get('cidr'):
-            ranges.append(iface['cidr'])
+        cidr = iface.get('cidr')
+        ip = iface.get('ip', '')
+        iface_name = iface.get('interface', '').lower()
+
+        if not cidr:
+            continue
+
+        # Skip virtual interfaces
+        if any(skip in iface_name for skip in skip_interfaces):
+            logger.debug(f"Skipping virtual interface: {iface_name} ({cidr})")
+            continue
+
+        # Skip virtual networks by IP prefix
+        if any(ip.startswith(prefix) for prefix in skip_prefixes):
+            logger.debug(f"Skipping virtual network: {cidr}")
+            continue
+
+        # Limit large subnets to /24 to avoid scanning too many IPs
+        import ipaddress
+        network = ipaddress.IPv4Network(cidr, strict=False)
+        if network.prefixlen < 24:
+            # Convert /16 or larger to /24 based on current IP
+            base_ip = '.'.join(ip.split('.')[:3]) + '.0'
+            cidr = f"{base_ip}/24"
+            logger.debug(f"Limited large subnet {network} to {cidr}")
+
+        ranges.append(cidr)
 
     # If no interfaces found, use auto-detect
     if not ranges:

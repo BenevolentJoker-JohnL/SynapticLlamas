@@ -116,3 +116,21 @@ d4c7fc6 Add caching to GGUF resolver to avoid redundant ollama show calls
 
 ### New Issue: Inference Timeout
 The coordinator starts successfully but doesn't complete inference requests within 300 seconds. This is a separate performance/reliability issue that needs investigation.
+
+## Port Conflict Resolution (2025-10-05)
+
+### Issue: RPC Server Port Conflict
+**Symptom**: `httpcore.RemoteProtocolError: Server disconnected without sending a response`
+
+**Root cause**: TWO RPC server processes running on port 50052:
+1. `rpc-server --host 127.0.0.1 --port 50052` (localhost only)
+2. `rpc-server --host 0.0.0.0 --port 50052` (all interfaces)
+
+**Fix**: Killed both RPC server processes (PID 997928) to clear port conflict
+
+**Result**: Port 50052 now free; system will only use the three network IP RPC backends from config:
+- 10.9.66.154:50052
+- 10.9.66.157:50052
+- 10.9.66.45:50052
+
+**Status**: Ready for clean testing without port conflicts

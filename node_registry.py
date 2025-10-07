@@ -206,9 +206,16 @@ class NodeRegistry:
             logger.error(f"Invalid CIDR: {cidr} - {e}")
             return []
 
-    def health_check_all(self, timeout: float = 3.0) -> Dict[str, bool]:
+    def health_check_all(self, timeout: float = 2.0, connection_timeout: float = 1.0,
+                         auto_remove: bool = True, max_failures: int = 3) -> Dict[str, bool]:
         """
-        Health check all registered nodes.
+        Health check all registered nodes and optionally remove persistently unhealthy ones.
+
+        Args:
+            timeout: Health check timeout
+            connection_timeout: Connection timeout
+            auto_remove: Auto-remove nodes after max_failures consecutive failures
+            max_failures: Maximum consecutive failures before removal
 
         Returns:
             Dict of {url: is_healthy}
@@ -217,7 +224,7 @@ class NodeRegistry:
 
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {
-                executor.submit(node.health_check, timeout): url
+                executor.submit(node.health_check, timeout, connection_timeout): url
                 for url, node in self.nodes.items()
             }
 
@@ -225,8 +232,32 @@ class NodeRegistry:
                 url = futures[future]
                 results[url] = future.result()
 
+        # Check for nodes to remove
+        to_remove = []
+        for url, node in self.nodes.items():
+            if auto_remove and node.metrics.consecutive_failures >= max_failures:
+                to_remove.append(url)
+                logger.warning(
+                    f"🗑️  Removing node {node.name} after {node.metrics.consecutive_failures} "
+                    f"consecutive health check failures"
+                )
+
+        # Remove failed nodes
+        with self._lock:
+            for url in to_remove:
+                self.nodes.pop(url, None)
+                # Also auto-save updated config if it exists
+                try:
+                    import os
+                    nodes_config = os.path.expanduser("~/.synapticllamas_nodes.json")
+                    if os.path.exists(nodes_config):
+                        self.save_config(nodes_config)
+                        logger.info(f"💾 Auto-saved updated node list to {nodes_config}")
+                except Exception as e:
+                    logger.debug(f"Could not auto-save config: {e}")
+
         # Log unhealthy nodes
-        unhealthy = [url for url, healthy in results.items() if not healthy]
+        unhealthy = [url for url, healthy in results.items() if not healthy and url not in to_remove]
         if unhealthy:
             logger.warning(f"⚠️  Unhealthy nodes: {unhealthy}")
 
