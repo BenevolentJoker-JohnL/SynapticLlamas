@@ -10,6 +10,64 @@ sollol_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'SO
 if sollol_path not in sys.path:
     sys.path.insert(0, sollol_path)
 
+# Configure logging to match SOLLOL format BEFORE any imports that use logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+# Suppress at warnings module level (for UserWarning from Dask)
+import warnings
+warnings.filterwarnings('ignore', message='.*Task queue depth.*')
+warnings.filterwarnings('ignore', message='.*Unknown GPU.*')
+warnings.filterwarnings('ignore', message='.*Port .* is already in use.*')
+
+# Add filter to block specific noisy warnings permanently
+class DistributedWarningFilter(logging.Filter):
+    """Filter out noisy Dask/distributed warnings and HTTP access logs"""
+    def filter(self, record):
+        msg = record.getMessage()
+        # Block "Task queue depth" warnings
+        if "Task queue depth" in msg:
+            return False
+        # Block GPU warnings from SOLLOL
+        if "Unknown GPU" in msg:
+            return False
+        # Block HTTP access logs (dashboard polling spam)
+        if " HTTP/1" in msg and " - - " in msg:
+            return False
+        return True
+
+# Apply filter to root logger (catches everything)
+http_filter = DistributedWarningFilter()
+logging.root.addFilter(http_filter)
+
+# Also add filter to all existing handlers to ensure it catches everything
+for handler in logging.root.handlers:
+    handler.addFilter(http_filter)
+
+# Configure Dask to suppress worker logging
+try:
+    import dask
+    dask.config.set({'logging.distributed': 'error'})
+except:
+    pass
+
+# Suppress noisy warnings from distributed and SOLLOL - BEFORE IMPORTS
+logging.getLogger('distributed').setLevel(logging.ERROR)  # Parent logger catches all distributed warnings
+logging.getLogger('distributed.worker').setLevel(logging.ERROR)
+logging.getLogger('distributed.scheduler').setLevel(logging.ERROR)
+logging.getLogger('distributed.nanny').setLevel(logging.ERROR)
+logging.getLogger('distributed.core').setLevel(logging.ERROR)
+logging.getLogger('sollol.vram_monitor').setLevel(logging.ERROR)
+logging.getLogger('sollol.pool').setLevel(logging.ERROR)
+logging.getLogger('sollol.unified_dashboard').setLevel(logging.ERROR)  # Suppress HTTP access logs
+logging.getLogger('sollol.rpc_registry').setLevel(logging.ERROR)  # Suppress RPC backend logs
+logging.getLogger('sollol.rpc_discovery').setLevel(logging.ERROR)  # Suppress RPC discovery logs
+logging.getLogger('werkzeug').setLevel(logging.ERROR)  # Suppress Flask HTTP logs
+logging.getLogger('gevent.pywsgi').setLevel(logging.ERROR)  # Suppress gevent HTTP logs
+logging.getLogger('sollol.dashboard.access').setLevel(logging.CRITICAL + 1)  # Suppress dashboard HTTP access logs
+
 # Now import other modules
 from orchestrator import run_parallel_agents
 from distributed_orchestrator import DistributedOrchestrator
@@ -29,50 +87,6 @@ from rich.panel import Panel
 
 # Import SOLLOL modules
 from sollol.rpc_registry import RPCBackendRegistry
-
-# Configure logging to match SOLLOL format
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
-# Suppress at warnings module level (for UserWarning from Dask)
-import warnings
-warnings.filterwarnings('ignore', message='.*Task queue depth.*')
-warnings.filterwarnings('ignore', message='.*Unknown GPU.*')
-warnings.filterwarnings('ignore', message='.*Port .* is already in use.*')
-
-# Add filter to block specific noisy warnings permanently
-class DistributedWarningFilter(logging.Filter):
-    """Filter out noisy Dask/distributed warnings"""
-    def filter(self, record):
-        msg = record.getMessage()
-        # Block "Task queue depth" warnings
-        if "Task queue depth" in msg:
-            return False
-        # Block GPU warnings from SOLLOL
-        if "Unknown GPU" in msg:
-            return False
-        return True
-
-# Apply filter to root logger (catches everything)
-logging.root.addFilter(DistributedWarningFilter())
-
-# Configure Dask to suppress worker logging
-try:
-    import dask
-    dask.config.set({'logging.distributed': 'error'})
-except:
-    pass
-
-# Suppress noisy warnings from distributed and SOLLOL
-logging.getLogger('distributed').setLevel(logging.ERROR)  # Parent logger catches all distributed warnings
-logging.getLogger('distributed.worker').setLevel(logging.ERROR)
-logging.getLogger('distributed.scheduler').setLevel(logging.ERROR)
-logging.getLogger('distributed.nanny').setLevel(logging.ERROR)
-logging.getLogger('distributed.core').setLevel(logging.ERROR)
-logging.getLogger('sollol.vram_monitor').setLevel(logging.ERROR)
-logging.getLogger('sollol.pool').setLevel(logging.ERROR)
 
 logger = logging.getLogger(__name__)
 
@@ -382,13 +396,39 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
         else:
             return None, None
 
-    # Don't initialize orchestrator at startup if in distributed mode
-    # This allows users to add nodes first via discover/add commands
-    # Orchestrator will be created lazily when first needed
-    if current_mode != "distributed":
-        executor, orchestrator = ensure_orchestrator()
-    else:
-        executor, orchestrator = None, None
+    # Initialize orchestrator at startup for all modes (including distributed)
+    # This ensures RayHybridRouter's auto-start dashboard feature works
+    executor, orchestrator = ensure_orchestrator()
+
+    # Auto-register with dashboard if in distributed mode
+    dashboard_client = None
+    if current_mode == 'distributed':
+        try:
+            from sollol import DashboardClient
+            from sollol.rpc_discovery import auto_discover_rpc_backends
+            import socket
+            hostname = socket.gethostname()
+
+            # Discover RPC backends to include in metadata
+            rpc_backends = auto_discover_rpc_backends()
+
+            dashboard_client = DashboardClient(
+                app_name=f"SynapticLlamas ({hostname})",
+                router_type="IntelligentRouter",
+                version="1.0.0",
+                dashboard_url="http://localhost:8080",
+                metadata={
+                    "nodes": len(global_registry),
+                    "mode": current_mode,
+                    "task_distribution": task_distribution_enabled,
+                    "model_sharding": model_sharding_enabled and len(rpc_backends) > 0,  # Boolean indicator
+                    "rpc_backends": len(rpc_backends) if rpc_backends else None,
+                },
+                auto_register=True
+            )
+            logger.info(f"✅ Registered with SOLLOL dashboard: {dashboard_client.app_id}")
+        except Exception as e:
+            logger.debug(f"Dashboard registration failed (dashboard may not be running): {e}")
 
     last_result = None
 
@@ -840,6 +880,16 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                 if current_mode == 'dask' and executor:
                     status_data["Dask Workers"] = len(executor.client.scheduler_info()['workers'])
 
+                # Add FlockParser status
+                if use_flockparser and orchestrator and orchestrator.flockparser_adapter:
+                    fp_stats = orchestrator.flockparser_adapter.get_statistics()
+                    if fp_stats['available']:
+                        status_data["FlockParser RAG"] = f"ON ({fp_stats['documents']} docs, {fp_stats['chunks']} chunks)"
+                    else:
+                        status_data["FlockParser RAG"] = "ON (no documents)"
+                else:
+                    status_data["FlockParser RAG"] = "OFF"
+
                 print_status_table(status_data)
 
             # Benchmark command
@@ -884,75 +934,48 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     current_hybrid_router = orchestrator.hybrid_router
                     logger.info("📡 Dashboard will monitor llama.cpp backend")
 
+                # Shared result from dashboard startup
+                dashboard_result = {}
+
                 def run_dashboard_thread():
-                    # Use NEW SOLLOL UnifiedDashboard with universal observability
-                    from sollol import UnifiedDashboard, DashboardClient
+                    # Use SOLLOL UnifiedDashboard with automatic detection
+                    from sollol import run_unified_dashboard
                     import time
 
-                    # Create SOLLOL UnifiedDashboard with NEW features
-                    dashboard = UnifiedDashboard(
+                    result = run_unified_dashboard(
                         router=current_hybrid_router,
                         ray_dashboard_port=8265,
                         dask_dashboard_port=8787,
                         dashboard_port=8080,
+                        host='0.0.0.0',
                         enable_dask=dashboard_enable_dask,  # Configurable Dask dashboard
                     )
 
-                    # Re-suppress distributed logging after Dask client creation
-                    # (Dask resets logging when dashboard client is created)
-                    logging.getLogger('distributed').setLevel(logging.ERROR)
-                    logging.getLogger('distributed.worker').setLevel(logging.ERROR)
-                    logging.getLogger('distributed.scheduler').setLevel(logging.ERROR)
-                    logging.getLogger('distributed.nanny').setLevel(logging.ERROR)
-                    logging.getLogger('distributed.core').setLevel(logging.ERROR)
+                    if result:
+                        dashboard_result.update(result)
 
-                    if dashboard_verbose:
-                        logging.info("📊 Using NEW SOLLOL UnifiedDashboard with:")
-                        logging.info("   • Universal network observability")
-                        logging.info("   • Application tracking")
-                        logging.info("   • Ray dashboard (port 8265)")
-                        logging.info("   • Dask dashboard (port 8787)")
-                        logging.info("   • WebSocket event streams")
-
-                    # Start dashboard in background thread
-                    import threading
-                    server_thread = threading.Thread(
-                        target=lambda: dashboard.run(host='0.0.0.0', debug=False),
-                        daemon=True
-                    )
-                    server_thread.start()
-
-                    # Wait for server to start, then register
-                    time.sleep(2)
-
-                    # NOW register SynapticLlamas with the dashboard (after server is ready)
-                    logging.info("📱 Registering SynapticLlamas with dashboard...")
-                    client = DashboardClient(
-                        app_name="SynapticLlamas",
-                        router_type="RayHybridRouter",
-                        version="1.0.0",
-                        dashboard_url="http://localhost:8080",
-                        metadata={"nodes": len(current_registry) if current_registry else 0},
-                        auto_register=True
-                    )
-                    logging.info(f"✅ Registered with dashboard: SynapticLlamas ({client.app_id})")
-
-                    # Keep thread alive (server_thread is daemon, so it will die when main thread dies)
-                    while True:
-                        time.sleep(60)
+                    # Keep thread alive if we started the dashboard
+                    if result and result.get('started'):
+                        while True:
+                            time.sleep(60)
 
                 dashboard_thread = threading.Thread(target=run_dashboard_thread, daemon=True, name="DashboardServer")
                 dashboard_thread.start()
 
                 import time
-                time.sleep(4)  # Give server time to start AND register (2s server + 2s registration)
+                time.sleep(2)  # Give dashboard detection time to complete
 
-                logging.info("📊 NEW SOLLOL Dashboard features enabled!")
+                logging.info("📊 SOLLOL Dashboard features enabled!")
 
-                print("✅ Dashboard started in background!")
-                print(f"   Tracking {len(current_registry)} nodes from your session")
-                print("   Open http://localhost:8080 in your browser")
-                print("   Dashboard will auto-shutdown when you exit SynapticLlamas\n")
+                # Log appropriate message based on result
+                if dashboard_result.get('started'):
+                    print("🚀 Started SOLLOL Dashboard in background!")
+                    print(f"   Tracking {len(current_registry)} nodes from your session")
+                    print("   Open http://localhost:8080 in your browser")
+                    print("   Dashboard will auto-shutdown when you exit SynapticLlamas\n")
+                else:
+                    print("✅ Using existing SOLLOL Dashboard at http://localhost:8080")
+                    print(f"   Auto-registered with {len(current_registry)} nodes from your session\n")
 
             # Handle metrics
             elif command == 'metrics':

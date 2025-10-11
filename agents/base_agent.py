@@ -78,13 +78,52 @@ class BaseAgent(ABC):
                 else:
                     raw_output = str(response)
 
-                # Return standardized format
-                return {
-                    "agent": self.name,
-                    "status": "success",
-                    "format": "json" if force_json else "text",
-                    "data": standardize_to_json(self.name, raw_output) if force_json else raw_output
-                }
+                # Use TrustCall validation if enabled and schema defined
+                if use_trustcall and force_json and hasattr(self, 'expected_schema') and self.expected_schema:
+                    # Create repair function that can call LLM again via HybridRouter
+                    def repair_fn(repair_prompt):
+                        try:
+                            repair_messages = [{"role": "user", "content": repair_prompt}]
+                            repair_response = self._hybrid_router_sync.route_request(
+                                model=self.model,
+                                messages=repair_messages,
+                                stream=False,
+                                timeout=self.timeout
+                            )
+                            if isinstance(repair_response, dict):
+                                if 'message' in repair_response:
+                                    return repair_response['message'].get('content', '{}')
+                                elif 'response' in repair_response:
+                                    return repair_response['response']
+                                elif 'content' in repair_response:
+                                    return repair_response['content']
+                            return "{}"
+                        except Exception as e:
+                            logger.error(f"HybridRouter repair call failed: {e}")
+                            return "{}"
+
+                    # Validate and repair using TrustCall
+                    validated_json = trust_validator.validate_and_repair(
+                        raw_output,
+                        self.expected_schema,
+                        repair_fn,
+                        self.name
+                    )
+
+                    return {
+                        "agent": self.name,
+                        "status": "success",
+                        "format": "json",
+                        "data": validated_json
+                    }
+                else:
+                    # Fallback to old standardization
+                    return {
+                        "agent": self.name,
+                        "status": "success",
+                        "format": "json" if force_json else "text",
+                        "data": standardize_to_json(self.name, raw_output) if force_json else raw_output
+                    }
             except Exception as e:
                 logger.error(f"❌ HybridRouter failed for {self.name}: {e}")
                 import traceback

@@ -68,7 +68,9 @@ class DistributedOrchestrator:
         self.enable_distributed_inference = enable_distributed_inference
         self.task_distribution_enabled = task_distribution_enabled
 
-        if enable_distributed_inference:
+        # Create RayHybridRouter if EITHER task distribution OR model sharding is enabled
+        # (RayHybridRouter provides dashboard + Ray parallelization even without RPC backends)
+        if enable_distributed_inference or task_distribution_enabled:
             try:
                 # Use RayHybridRouter for Ray+Dask distributed execution
                 from sollol.ray_hybrid_router import RayHybridRouter
@@ -96,7 +98,10 @@ class DistributedOrchestrator:
                     ollama_nodes = [{"host": node.url.replace("http://", "").split(":")[0],
                                     "port": node.url.split(":")[-1]}
                                    for node in self.registry.nodes.values()]
-                    ollama_pool = OllamaPool(nodes=ollama_nodes if ollama_nodes else None)
+                    ollama_pool = OllamaPool(
+                        nodes=ollama_nodes if ollama_nodes else None,
+                        app_name="SynapticLlamas (Ollama Pool)"  # Task distribution pool
+                    )
                     logger.info(f"✅ Task distribution enabled: Ollama pool with {len(ollama_nodes)} nodes")
                 else:
                     logger.info("⏭️  Task distribution disabled: Using only RPC model sharding")
@@ -119,21 +124,30 @@ class DistributedOrchestrator:
                 logging.getLogger('distributed.nanny').setLevel(logging.ERROR)
                 logging.getLogger('distributed.core').setLevel(logging.ERROR)
 
-                logger.info(f"✨ Ray+Dask distributed routing enabled")
-                logger.info(f"🔗 llama.cpp model sharding enabled with {len(rpc_backends) if rpc_backends else 0} RPC backends")
+                if enable_distributed_inference and rpc_backends:
+                    logger.info(f"✨ Ray+Dask distributed routing enabled")
+                    logger.info(f"🔗 llama.cpp model sharding enabled with {len(rpc_backends)} RPC backends")
+                else:
+                    logger.info(f"✨ Ray enabled for Ollama task distribution (dashboard + parallelization)")
             except Exception as e:
                 logger.error(f"Failed to initialize RayHybridRouter: {e}")
+                logger.error(f"Exception details: {e}", exc_info=True)
                 self.enable_distributed_inference = False
 
-        # Initialize FlockParser RAG adapter
+        # Initialize FlockParser RAG adapter (AFTER HybridRouter so it can use distributed embeddings)
         self.use_flockparser = use_flockparser
         self.flockparser_adapter = None
         if use_flockparser:
             try:
-                self.flockparser_adapter = get_flockparser_adapter()
+                # Pass SOLLOL components for distributed document queries
+                self.flockparser_adapter = get_flockparser_adapter(
+                    hybrid_router_sync=self.hybrid_router_sync if hasattr(self, 'hybrid_router_sync') else None,
+                    load_balancer=self.load_balancer if use_sollol else None
+                )
                 if self.flockparser_adapter.available:
                     stats = self.flockparser_adapter.get_statistics()
-                    logger.info(f"📚 FlockParser RAG enabled ({stats['documents']} documents, {stats['chunks']} chunks)")
+                    mode = "distributed" if self.flockparser_adapter.distributed_mode else "local"
+                    logger.info(f"📚 FlockParser RAG enabled ({mode} mode, {stats['documents']} docs, {stats['chunks']} chunks)")
                 else:
                     logger.warning("⚠️  FlockParser enabled but not available - RAG disabled")
                     self.use_flockparser = False
@@ -193,6 +207,17 @@ class DistributedOrchestrator:
         if collaborative:
             logger.info("🤝 Using collaborative workflow mode")
 
+            # FlockParser document enhancement (if enabled)
+            enhanced_input = input_data
+            source_documents = []
+            if self.use_flockparser and self.flockparser_adapter:
+                logger.info("📚 Enhancing query with FlockParser document context...")
+                enhanced_input, source_documents = self.flockparser_adapter.enhance_research_query(
+                    input_data,
+                    top_k=15,
+                    max_context_tokens=2000
+                )
+
             # Get all healthy nodes for distributed refinement
             healthy_nodes = self.registry.get_healthy_nodes()
 
@@ -227,8 +252,8 @@ class DistributedOrchestrator:
                 synthesis_model=synthesis_model,
                 hybrid_router=self.hybrid_router_sync if self.hybrid_router_sync else None
             )
-            # Pass http://localhost:11434 as default, but agents will use load balancer if available
-            workflow_result = workflow.run(input_data, ollama_url="http://localhost:11434")
+            # Pass enhanced input (with document context if FlockParser enabled)
+            workflow_result = workflow.run(enhanced_input, ollama_url="http://localhost:11434")
 
             total_time = time.time() - start_time
 
@@ -249,14 +274,27 @@ class DistributedOrchestrator:
                     'time': total_time
                 })
 
+            # Prepare final result with citations if FlockParser was used
+            result = {
+                'pipeline': 'SynapticLlamas-Collaborative',
+                'workflow': 'sequential-collaborative',
+                'final_output': workflow_result['final_output'],
+                'conversation_history': workflow_result['conversation_history'],
+                'workflow_summary': workflow_result['workflow_summary']
+            }
+
+            # Add FlockParser source citations if documents were used
+            if source_documents:
+                result['source_documents'] = source_documents
+                result['document_grounded'] = True
+                # Append citations to final output
+                citations = "\n\n## 📚 Source Documents\n" + "\n".join(
+                    f"{i+1}. {doc}" for i, doc in enumerate(source_documents)
+                )
+                result['final_output'] = result['final_output'] + citations
+
             return {
-                'result': {
-                    'pipeline': 'SynapticLlamas-Collaborative',
-                    'workflow': 'sequential-collaborative',
-                    'final_output': workflow_result['final_output'],
-                    'conversation_history': workflow_result['conversation_history'],
-                    'workflow_summary': workflow_result['workflow_summary']
-                },
+                'result': result,
                 'metrics': {
                     'total_execution_time': total_time,
                     'mode': 'collaborative',
@@ -1041,15 +1079,31 @@ class DistributedOrchestrator:
         if content is None:
             return ""
 
+        # If it's a string, try to parse it as JSON first
+        if isinstance(content, str):
+            try:
+                import json
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    # Recursively extract from parsed JSON
+                    return self._extract_narrative_from_json(parsed)
+            except:
+                # Not JSON, return as-is
+                return content
+
         if isinstance(content, dict):
             # Try to extract narrative content from common keys (in priority order)
             # 'data' is for SOLLOL package agent responses
             # 'story' is for Storyteller agent output
             # 'detailed_explanation' is for Editor synthesis output
             # 'context' is for Researcher agent output
-            for key in ['data', 'story', 'detailed_explanation', 'context', 'final_output', 'summary', 'content', 'narrative']:
+            for key in ['detailed_explanation', 'story', 'context', 'summary', 'final_output', 'narrative', 'content', 'data']:
                 if key in content and content[key]:  # Must have actual content
-                    return str(content[key])
+                    extracted = content[key]
+                    # Recursively extract if it's a dict or JSON string
+                    if isinstance(extracted, (dict, str)):
+                        return self._extract_narrative_from_json(extracted)
+                    return str(extracted)
 
             # If no known keys found, try to extract ANY string value
             # This handles cases where the JSON uses custom keys like {"The Thread of Time": "story content"}

@@ -37,7 +37,15 @@ class DaskDistributedExecutor:
             self.client = Client(dask_scheduler)
         else:
             logger.info("Starting local Dask cluster")
-            self.client = Client()
+            # Create LocalCluster with extended session token expiration (1 year)
+            from dask.distributed import LocalCluster
+            cluster = LocalCluster(
+                dashboard_address=":8787",
+                silence_logs=logging.ERROR,
+                # Bokeh server config for dashboard - set token expiration to 1 year
+                extra_dashboard_args=["--session-token-expiration=31536000000"]  # 1 year in milliseconds
+            )
+            self.client = Client(cluster)
 
         logger.info(f"Dask cluster ready: {self.client.dashboard_link}")
 

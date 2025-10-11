@@ -32,7 +32,9 @@ class FlockParserAdapter:
         self,
         flockparser_path: str = "/home/joker/FlockParser",
         embedding_model: str = "mxbai-embed-large",
-        ollama_url: str = "http://localhost:11434"
+        ollama_url: str = "http://localhost:11434",
+        hybrid_router_sync=None,
+        load_balancer=None
     ):
         """
         Initialize FlockParser adapter.
@@ -41,12 +43,19 @@ class FlockParserAdapter:
             flockparser_path: Path to FlockParser installation
             embedding_model: Embedding model used by FlockParser
             ollama_url: URL of Ollama instance for embeddings
+            hybrid_router_sync: Optional HybridRouterSync for distributed embeddings
+            load_balancer: Optional SOLLOL LoadBalancer for intelligent routing
         """
         self.flockparser_path = Path(flockparser_path)
         self.knowledge_base_path = self.flockparser_path / "knowledge_base"
         self.document_index_path = self.flockparser_path / "document_index.json"
         self.embedding_model = embedding_model
         self.ollama_url = ollama_url
+
+        # SOLLOL distributed routing support
+        self.hybrid_router_sync = hybrid_router_sync
+        self.load_balancer = load_balancer
+        self.distributed_mode = hybrid_router_sync is not None
 
         # Check if FlockParser is available
         if not self.flockparser_path.exists():
@@ -58,7 +67,8 @@ class FlockParserAdapter:
         else:
             self.available = True
             doc_count = self._count_documents()
-            logger.info(f"✅ FlockParser adapter initialized ({doc_count} documents)")
+            mode_str = " (distributed mode)" if self.distributed_mode else ""
+            logger.info(f"✅ FlockParser adapter initialized ({doc_count} documents){mode_str}")
 
     def _count_documents(self) -> int:
         """Count documents in FlockParser knowledge base."""
@@ -72,7 +82,7 @@ class FlockParserAdapter:
 
     def _get_embedding(self, text: str) -> Optional[List[float]]:
         """
-        Generate embedding for text using Ollama.
+        Generate embedding for text using Ollama (with optional distributed routing).
 
         Args:
             text: Text to embed
@@ -81,6 +91,18 @@ class FlockParserAdapter:
             Embedding vector or None if failed
         """
         try:
+            # Use HybridRouter if available for intelligent routing
+            if self.hybrid_router_sync:
+                try:
+                    result = self.hybrid_router_sync.generate_embedding(
+                        model=self.embedding_model,
+                        prompt=text
+                    )
+                    return result.get('embedding', []) if result else None
+                except Exception as e:
+                    logger.debug(f"HybridRouter embedding failed, falling back to direct: {e}")
+
+            # Fallback to direct Ollama call
             response = requests.post(
                 f"{self.ollama_url}/api/embeddings",
                 json={
@@ -326,6 +348,100 @@ IMPORTANT:
 
         return enhanced_query, sources
 
+    def generate_document_report(
+        self,
+        query: str,
+        agent_insights: List[Dict],
+        top_k: int = 20,
+        max_context_tokens: int = 3000
+    ) -> Dict:
+        """
+        Generate a comprehensive report combining agent insights with document evidence.
+
+        Args:
+            query: Research query
+            agent_insights: List of agent outputs (Researcher, Critic, Editor)
+            top_k: Number of document chunks to retrieve
+            max_context_tokens: Maximum tokens for document context
+
+        Returns:
+            {
+                'report': str,  # Formatted markdown report
+                'sources': List[str],  # Source documents cited
+                'evidence_chunks': List[Dict],  # Retrieved evidence
+                'agent_count': int
+            }
+        """
+        logger.info(f"📝 Generating document-grounded report for: {query[:60]}...")
+
+        # Query FlockParser for relevant evidence
+        evidence_chunks = self.query_documents(query, top_k=top_k)
+
+        # Format document evidence
+        evidence_context, sources = self.format_context_for_research(
+            evidence_chunks,
+            max_tokens=max_context_tokens
+        )
+
+        # Build comprehensive report
+        report_sections = []
+
+        # Executive Summary
+        report_sections.append("# Research Report\n")
+        report_sections.append(f"**Query:** {query}\n")
+
+        if sources:
+            report_sections.append(f"**Sources:** {len(sources)} document(s)\n")
+            report_sections.append(f"**Evidence Chunks:** {len(evidence_chunks)} relevant sections\n")
+
+        # Agent Insights Section
+        report_sections.append("\n## Analysis\n")
+
+        for insight in agent_insights:
+            agent_name = insight.get('agent', 'Unknown')
+            data = insight.get('data', {})
+
+            # Extract content from various formats
+            if isinstance(data, dict):
+                content = data.get('context', data.get('detailed_explanation', data.get('content', '')))
+                key_facts = data.get('key_facts', [])
+            else:
+                content = str(data)
+                key_facts = []
+
+            if content:
+                report_sections.append(f"### {agent_name} Perspective\n")
+                report_sections.append(f"{content}\n")
+
+                if key_facts:
+                    report_sections.append("\n**Key Points:**\n")
+                    for fact in key_facts:
+                        report_sections.append(f"- {fact}\n")
+                report_sections.append("\n")
+
+        # Document Evidence Section
+        if evidence_context:
+            report_sections.append("\n## Supporting Evidence from Documents\n")
+            report_sections.append(evidence_context)
+            report_sections.append("\n")
+
+        # Citations Section
+        if sources:
+            report_sections.append("\n## References\n")
+            for i, source in enumerate(sources, 1):
+                report_sections.append(f"{i}. {source}\n")
+
+        report = "\n".join(report_sections)
+
+        logger.info(f"✅ Report generated: {len(agent_insights)} agent insights, {len(sources)} sources")
+
+        return {
+            'report': report,
+            'sources': sources,
+            'evidence_chunks': evidence_chunks,
+            'agent_count': len(agent_insights)
+        }
+
     def get_statistics(self) -> Dict:
         """Get statistics about FlockParser knowledge base."""
         if not self.available or not self.document_index_path.exists():
@@ -362,12 +478,27 @@ _adapter = None
 
 def get_flockparser_adapter(
     flockparser_path: str = "/home/joker/FlockParser",
+    hybrid_router_sync=None,
+    load_balancer=None,
     **kwargs
 ) -> FlockParserAdapter:
-    """Get or create global FlockParser adapter instance."""
+    """
+    Get or create global FlockParser adapter instance.
+
+    Args:
+        flockparser_path: Path to FlockParser installation
+        hybrid_router_sync: Optional HybridRouterSync for distributed embeddings
+        load_balancer: Optional SOLLOL LoadBalancer
+        **kwargs: Additional arguments passed to FlockParserAdapter
+    """
     global _adapter
     if _adapter is None:
-        _adapter = FlockParserAdapter(flockparser_path, **kwargs)
+        _adapter = FlockParserAdapter(
+            flockparser_path,
+            hybrid_router_sync=hybrid_router_sync,
+            load_balancer=load_balancer,
+            **kwargs
+        )
     return _adapter
 
 

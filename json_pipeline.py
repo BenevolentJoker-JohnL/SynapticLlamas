@@ -1,6 +1,7 @@
 import json
 import re
 import logging
+from trustcall import trust_validator
 
 logger = logging.getLogger(__name__)
 
@@ -90,13 +91,15 @@ def extract_json_from_text(text):
     return None
 
 
-def standardize_to_json(agent_name, raw_output):
+def standardize_to_json(agent_name, raw_output, expected_schema=None, repair_fn=None):
     """
-    Convert agent output to standardized JSON format.
+    Convert agent output to standardized JSON format with TrustCall validation.
 
     Args:
         agent_name: Name of the agent
         raw_output: Raw text output from agent
+        expected_schema: Optional expected schema for validation
+        repair_fn: Optional function to call LLM for repair
 
     Returns:
         dict with standardized structure
@@ -105,15 +108,50 @@ def standardize_to_json(agent_name, raw_output):
     extracted_json = extract_json_from_text(raw_output)
 
     if extracted_json and isinstance(extracted_json, dict):
-        # If valid JSON found, wrap it with agent metadata
-        return {
-            "agent": agent_name,
-            "status": "success",
-            "format": "json",
-            "data": extracted_json
-        }
+        # If valid JSON found, validate with TrustCall if schema provided
+        if expected_schema and repair_fn:
+            logger.info(f"🔍 {agent_name} - Validating JSON with TrustCall")
+            validated_json = trust_validator.validate_and_repair(
+                json.dumps(extracted_json),
+                expected_schema,
+                repair_fn,
+                agent_name
+            )
+            return {
+                "agent": agent_name,
+                "status": "success",
+                "format": "json",
+                "data": validated_json
+            }
+        else:
+            # No schema validation, just wrap it
+            return {
+                "agent": agent_name,
+                "status": "success",
+                "format": "json",
+                "data": extracted_json
+            }
     else:
-        # If no JSON found, wrap the raw text
+        # If no JSON found, try TrustCall repair if available
+        if expected_schema and repair_fn:
+            logger.warning(f"⚠️  {agent_name} did not output valid JSON. Attempting TrustCall repair...")
+            repaired_json = trust_validator.validate_and_repair(
+                raw_output,
+                expected_schema,
+                repair_fn,
+                agent_name
+            )
+
+            # Check if repair was successful
+            if repaired_json and not repaired_json.get("error"):
+                return {
+                    "agent": agent_name,
+                    "status": "success",
+                    "format": "json",
+                    "data": repaired_json
+                }
+
+        # Fallback: wrap the raw text
         logger.warning(f"{agent_name} did not output valid JSON. Wrapping raw text.")
         return {
             "agent": agent_name,
@@ -158,11 +196,61 @@ def merge_json_outputs(json_outputs):
         json_outputs: List of standardized JSON outputs
 
     Returns:
-        dict with merged results
+        dict with merged results including synthesized final_output
     """
+    # Synthesize final_output from agent outputs
+    final_sections = []
+
+    for output in json_outputs:
+        agent_name = output.get("agent", "Unknown")
+        data = output.get("data", {})
+
+        # Handle case where data.content is a JSON string that needs parsing
+        if "content" in data and isinstance(data["content"], str):
+            try:
+                # Try to parse content as JSON
+                parsed_content = extract_json_from_text(data["content"])
+                if parsed_content and isinstance(parsed_content, dict):
+                    data = parsed_content
+            except:
+                pass
+
+        # Extract meaningful content from each agent
+        if output.get("format") == "json" or isinstance(data, dict):
+            # Try to get context or content field
+            content = data.get("context", data.get("content", ""))
+            key_facts = data.get("key_facts", [])
+            topics = data.get("topics", [])
+
+            section = f"## {agent_name} Analysis\n\n"
+
+            if content and isinstance(content, str):
+                section += f"{content}\n\n"
+
+            if key_facts and isinstance(key_facts, list):
+                section += "**Key Points:**\n"
+                for fact in key_facts:
+                    section += f"- {fact}\n"
+                section += "\n"
+
+            if topics and isinstance(topics, list):
+                section += "**Topics Covered:** " + ", ".join(str(t) for t in topics) + "\n\n"
+
+        else:
+            # Text format
+            content = data.get("content", str(data)) if isinstance(data, dict) else str(data)
+            section = f"## {agent_name} Analysis\n\n{content}\n\n"
+
+        if section.strip() and section != f"## {agent_name} Analysis\n\n\n\n":
+            final_sections.append(section)
+
+    # Create comprehensive final output
+    final_output = "\n".join(final_sections) if final_sections else "No output generated"
+
     return {
         "pipeline": "SynapticLlamas",
         "agent_count": len(json_outputs),
         "agents": [output["agent"] for output in json_outputs],
-        "outputs": json_outputs
+        "outputs": json_outputs,
+        "final_output": final_output
     }

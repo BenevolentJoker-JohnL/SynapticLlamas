@@ -211,7 +211,8 @@ class SOLLOLLoadBalancer:
         logger.debug(f"   Reasoning: {decision.reasoning}")
 
         # GPU verification (if GPU controller enabled and GPU expected)
-        if self.gpu_controller and context.requires_gpu:
+        # Don't force GPU if CPU fallback was triggered
+        if self.gpu_controller and context.requires_gpu and not context.metadata.get("gpu_fallback_to_cpu"):
             model = context.model_preference or payload.get('model', '')
             if model:
                 # Verify model is on GPU, force load if not
