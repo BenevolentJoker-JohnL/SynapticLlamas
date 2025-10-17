@@ -9,4 +9,6 @@ flask-sock
 waitress>=3.0.0
 asyncio>=3.4.3
 # SOLLOL - Intelligent load balancing and distributed inference
-sollol>=0.9.10
+sollol>=0.9.31
+# FlockParser - Document RAG with distributed processing (optional for FlockParser integration)
+flockparser>=1.0.4

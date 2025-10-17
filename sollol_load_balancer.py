@@ -12,7 +12,9 @@ All SOLLOL capabilities are automatically integrated:
 
 No external SOLLOL service needed - fully embedded!
 """
+import json
 import logging
+import threading
 import time
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, asdict
@@ -37,6 +39,14 @@ from node_registry import NodeRegistry
 from ollama_node import OllamaNode
 
 logger = logging.getLogger(__name__)
+
+# Try to import Redis for metrics publishing
+try:
+    import redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    logger.warning("Redis not available - dashboard metrics will not be published")
 
 
 @dataclass
@@ -68,7 +78,9 @@ class SOLLOLLoadBalancer:
         enable_gpu_control: bool = True,
         enable_hedging: bool = False,
         num_hedges: int = 2,
-        hybrid_router: Optional['HybridRouter'] = None
+        hybrid_router: Optional['HybridRouter'] = None,
+        redis_host: str = "localhost",
+        redis_port: int = 6379
     ):
         """
         Initialize SOLLOL load balancer.
@@ -79,6 +91,8 @@ class SOLLOLLoadBalancer:
             enable_hedging: Enable race-to-first hedging for low latency
             num_hedges: Number of parallel requests when hedging (2-3 recommended)
             hybrid_router: Optional HybridRouter for intelligent Ollama/RPC routing
+            redis_host: Redis host for metrics publishing
+            redis_port: Redis port for metrics publishing
         """
         self.registry = registry
         self.hybrid_router = hybrid_router
@@ -88,6 +102,34 @@ class SOLLOLLoadBalancer:
         self.priority_queue = PriorityQueue()
         self.memory = PerformanceMemory()
         self.metrics = MetricsCollector()
+
+        # Redis client for metrics publishing
+        self._metrics_redis_client = None
+        self._metrics_thread = None
+        self._metrics_stop_event = threading.Event()
+
+        if REDIS_AVAILABLE:
+            try:
+                self._metrics_redis_client = redis.Redis(
+                    host=redis_host,
+                    port=redis_port,
+                    decode_responses=True,
+                    socket_timeout=2
+                )
+                # Test connection
+                self._metrics_redis_client.ping()
+
+                # Start metrics publishing thread
+                self._metrics_thread = threading.Thread(
+                    target=self._publish_metrics_loop,
+                    daemon=True,
+                    name="SynapticLlamas-MetricsPublisher"
+                )
+                self._metrics_thread.start()
+                logger.info("📊 Metrics publishing to Redis enabled (sollol:router:metadata)")
+            except Exception as e:
+                logger.warning(f"Failed to connect to Redis for metrics: {e}")
+                self._metrics_redis_client = None
 
         # GPU controller (CRITICAL for SOLLOL's performance promise)
         self.gpu_controller = None
@@ -211,23 +253,32 @@ class SOLLOLLoadBalancer:
         logger.debug(f"   Reasoning: {decision.reasoning}")
 
         # GPU verification (if GPU controller enabled and GPU expected)
-        # Don't force GPU if CPU fallback was triggered
+        # Don't force GPU if CPU fallback was triggered OR if node is CPU-only
         if self.gpu_controller and context.requires_gpu and not context.metadata.get("gpu_fallback_to_cpu"):
-            model = context.model_preference or payload.get('model', '')
-            if model:
-                # Verify model is on GPU, force load if not
-                verified = self.gpu_controller.verify_routing_decision(
-                    selected_node.url,
-                    model,
-                    expected_location='GPU'
-                )
+            # CRITICAL: Only try to force GPU load if node HAS GPU hardware
+            # Automatically detect CPU-only nodes to avoid futile GPU load attempts
+            has_gpu = selected_node.capabilities and selected_node.capabilities.has_gpu
 
-                if not verified:
-                    logger.warning(
-                        f"⚠️  Model {model} not on GPU at {selected_node.url}, "
-                        "forcing GPU load..."
+            if has_gpu:
+                model = context.model_preference or payload.get('model', '')
+                if model:
+                    # Verify model is on GPU, force load if not
+                    verified = self.gpu_controller.verify_routing_decision(
+                        selected_node.url,
+                        model,
+                        expected_location='GPU'
                     )
-                    self.gpu_controller.force_gpu_load(selected_node.url, model)
+
+                    if not verified:
+                        logger.warning(
+                            f"⚠️  Model {model} not on GPU at {selected_node.url}, "
+                            "forcing GPU load..."
+                        )
+                        self.gpu_controller.force_gpu_load(selected_node.url, model)
+            else:
+                logger.debug(
+                    f"ℹ️  Node {selected_node.url} is CPU-only - skipping GPU verification"
+                )
 
         return decision
 
@@ -626,6 +677,67 @@ class SOLLOLLoadBalancer:
         loads = [node.calculate_load_score() / 100.0 for node in healthy_nodes]
         return sum(loads) / len(loads)
 
+    def _publish_metrics_loop(self):
+        """
+        Background thread to publish SynapticLlamas metrics to Redis every 5 seconds.
+
+        Publishes P50/P95/P99 latency percentiles and other metrics to the
+        same Redis key that OllamaPool uses (sollol:router:metadata) so the
+        dashboard can display SynapticLlamas routing statistics.
+        """
+        while not self._metrics_stop_event.is_set():
+            try:
+                if self._metrics_redis_client:
+                    # Get metrics summary (includes P50/P95/P99 percentiles)
+                    summary = self.metrics.get_summary()
+
+                    # Only publish if we have actual request data
+                    if summary.get("total_requests", 0) > 0:
+                        # Build payload matching OllamaPool format
+                        payload = {
+                            "source": "synaptic_llamas",
+                            "metrics": {
+                                "analytics": {
+                                    "p50_latency_ms": summary.get("p50_latency_ms", 0.0),
+                                    "p95_latency_ms": summary.get("p95_latency_ms", 0.0),
+                                    "p99_latency_ms": summary.get("p99_latency_ms", 0.0),
+                                    "success_rate": summary.get("success_rate", 1.0),
+                                    "avg_duration_ms": summary.get("avg_duration_ms", 0.0),
+                                    "total_requests": summary.get("total_requests", 0),
+                                    "successful_requests": summary.get("successful_requests", 0),
+                                },
+                                "synaptic_llamas": {
+                                    "total_nodes": len(self.registry.nodes),
+                                    "healthy_nodes": len(self.registry.get_healthy_nodes()),
+                                    "gpu_nodes": len(self.registry.get_gpu_nodes()),
+                                    "routing_decisions": summary.get("total_routing_decisions", 0),
+                                    "avg_routing_time_ms": summary.get("avg_routing_time_ms", 0.0),
+                                    "task_types": summary.get("task_types", {}),
+                                }
+                            }
+                        }
+
+                        # Publish to Redis with 30s TTL (same as OllamaPool)
+                        self._metrics_redis_client.setex(
+                            "sollol:router:metadata",
+                            30,
+                            json.dumps(payload)
+                        )
+
+                        logger.debug(
+                            f"📊 Published metrics: {summary['total_requests']} requests, "
+                            f"P50={summary.get('p50_latency_ms', 0):.0f}ms, "
+                            f"P95={summary.get('p95_latency_ms', 0):.0f}ms, "
+                            f"P99={summary.get('p99_latency_ms', 0):.0f}ms"
+                        )
+
+                # Sleep for 5 seconds before next publish
+                self._metrics_stop_event.wait(5)
+
+            except Exception as e:
+                logger.debug(f"Metrics publishing error: {e}")
+                self._metrics_stop_event.wait(5)
+
     def get_stats(self) -> Dict[str, Any]:
         """
         Get comprehensive statistics about routing and performance.
@@ -673,6 +785,26 @@ class SOLLOLLoadBalancer:
             stats['hedging'] = self.hedging.get_stats()
 
         return stats
+
+    def shutdown(self):
+        """Stop the metrics publishing thread and cleanup resources."""
+        if self._metrics_thread and self._metrics_thread.is_alive():
+            logger.info("Stopping metrics publishing thread...")
+            self._metrics_stop_event.set()
+            self._metrics_thread.join(timeout=2)
+
+        if self._metrics_redis_client:
+            try:
+                self._metrics_redis_client.close()
+            except Exception as e:
+                logger.debug(f"Error closing Redis connection: {e}")
+
+    def __del__(self):
+        """Cleanup on deletion."""
+        try:
+            self.shutdown()
+        except Exception:
+            pass  # Ignore errors during cleanup
 
     def __repr__(self):
         healthy = len(self.registry.get_healthy_nodes())

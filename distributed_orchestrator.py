@@ -100,7 +100,8 @@ class DistributedOrchestrator:
                                    for node in self.registry.nodes.values()]
                     ollama_pool = OllamaPool(
                         nodes=ollama_nodes if ollama_nodes else None,
-                        app_name="SynapticLlamas (Ollama Pool)"  # Task distribution pool
+                        app_name="SynapticLlamas (Ollama Pool)",  # Task distribution pool
+                        register_with_dashboard=False  # Don't register internal pool
                     )
                     logger.info(f"✅ Task distribution enabled: Ollama pool with {len(ollama_nodes)} nodes")
                 else:
@@ -1006,19 +1007,25 @@ class DistributedOrchestrator:
         if use_parallel:
             logger.info(f"⚡ PARALLEL MULTI-TURN MODE: {len(healthy_nodes)} nodes available\n")
             result = self._run_longform_parallel(
-                enhanced_query, content_type, chunks_needed, model
+                enhanced_query, content_type, chunks_needed, model, original_query=query
             )
         else:
             logger.info(f"📝 SEQUENTIAL MULTI-TURN MODE (insufficient nodes)\n")
             result = self._run_longform_sequential(
-                enhanced_query, content_type, chunks_needed, model
+                enhanced_query, content_type, chunks_needed, model, original_query=query
             )
 
-        # Add RAG metadata to result
+        # Add RAG metadata to result AND append citations to final output
         if source_documents:
             result['metadata'] = result.get('metadata', {})
             result['metadata']['rag_sources'] = source_documents
             result['metadata']['rag_enabled'] = True
+
+            # Append citations to final output (same as collaborative mode)
+            citations = "\n\n## 📚 Source Documents\n" + "\n".join(
+                f"{i+1}. {doc}" for i, doc in enumerate(source_documents)
+            )
+            result['result']['final_output'] = result['result']['final_output'] + citations
 
         return result
 
@@ -1077,6 +1084,7 @@ class DistributedOrchestrator:
     def _extract_narrative_from_json(self, content):
         """Extract narrative text from JSON response, filtering out metadata."""
         if content is None:
+            logger.debug("_extract_narrative_from_json: content is None")
             return ""
 
         # If it's a string, try to parse it as JSON first
@@ -1086,13 +1094,37 @@ class DistributedOrchestrator:
                 parsed = json.loads(content)
                 if isinstance(parsed, dict):
                     # Recursively extract from parsed JSON
+                    logger.debug(f"_extract_narrative_from_json: Parsed string as JSON dict with keys: {list(parsed.keys())}")
                     return self._extract_narrative_from_json(parsed)
             except:
                 # Not JSON, return as-is
+                logger.debug(f"_extract_narrative_from_json: Returning string as-is (not JSON, length: {len(content)})")
                 return content
 
         if isinstance(content, dict):
-            # Try to extract narrative content from common keys (in priority order)
+            logger.debug(f"_extract_narrative_from_json: Processing dict with keys: {list(content.keys())}")
+
+            # FIRST: Check if this is a raw API response and extract from it
+            # Ollama format: {'message': {'role': '...', 'content': '...'}, ...}
+            if 'message' in content and isinstance(content['message'], dict):
+                if 'content' in content['message']:
+                    extracted_content = content['message']['content']
+                    logger.info(f"✅ Extracted from Ollama API format: {len(extracted_content)} chars")
+                    # Recursively extract in case content is JSON string
+                    return self._extract_narrative_from_json(extracted_content)
+
+            # OpenAI format: {'choices': [{'message': {'content': '...'}, ...}], ...}
+            if 'choices' in content and isinstance(content['choices'], list):
+                if len(content['choices']) > 0:
+                    choice = content['choices'][0]
+                    if isinstance(choice, dict) and 'message' in choice:
+                        if isinstance(choice['message'], dict) and 'content' in choice['message']:
+                            extracted_content = choice['message']['content']
+                            logger.info(f"✅ Extracted from OpenAI API format: {len(extracted_content)} chars")
+                            # Recursively extract in case content is JSON string
+                            return self._extract_narrative_from_json(extracted_content)
+
+            # SECOND: Try to extract narrative content from common agent response keys (in priority order)
             # 'data' is for SOLLOL package agent responses
             # 'story' is for Storyteller agent output
             # 'detailed_explanation' is for Editor synthesis output
@@ -1100,28 +1132,33 @@ class DistributedOrchestrator:
             for key in ['detailed_explanation', 'story', 'context', 'summary', 'final_output', 'narrative', 'content', 'data']:
                 if key in content and content[key]:  # Must have actual content
                     extracted = content[key]
+                    logger.debug(f"_extract_narrative_from_json: Found key '{key}', recursing...")
                     # Recursively extract if it's a dict or JSON string
                     if isinstance(extracted, (dict, str)):
                         return self._extract_narrative_from_json(extracted)
                     return str(extracted)
 
-            # If no known keys found, try to extract ANY string value
+            # THIRD: If no known keys found, try to extract ANY string value
             # This handles cases where the JSON uses custom keys like {"The Thread of Time": "story content"}
             for key, value in content.items():
                 # Skip metadata keys (short values, lowercase, underscores)
                 if isinstance(value, str) and len(value) > 50:  # Narrative content is usually >50 chars
                     if not key.startswith('_') and not key.islower():  # Skip metadata-like keys
+                        logger.debug(f"_extract_narrative_from_json: Found long string value for key '{key}'")
                         return str(value)
 
-            # If still no content found, try ANY string value regardless of length
+            # FOURTH: If still no content found, try ANY string value regardless of length
             for key, value in content.items():
                 if isinstance(value, str) and value.strip():
+                    logger.debug(f"_extract_narrative_from_json: Found any string value for key '{key}'")
                     return str(value)
 
             # Last resort: log warning
-            logger.warning(f"No narrative content found in JSON response. Keys present: {list(content.keys())}")
+            logger.warning(f"❌ No narrative content found in JSON response. Keys present: {list(content.keys())}")
+            logger.warning(f"   Full content (first 500 chars): {str(content)[:500]}")
             return ""
 
+        logger.debug(f"_extract_narrative_from_json: Returning str(content) - type: {type(content)}")
         return str(content) if content else ""
 
     def _run_longform_parallel(
@@ -1129,7 +1166,8 @@ class DistributedOrchestrator:
         query: str,
         content_type: ContentType,
         chunks_needed: int,
-        model: str
+        model: str,
+        original_query: str = None
     ) -> dict:
         """
         Generate long-form content with parallel chunk generation.
@@ -1148,12 +1186,17 @@ class DistributedOrchestrator:
         # Get focus areas for parallel generation
         focus_areas = self._get_focus_areas_for_chunks(content_type, chunks_needed)
 
+        # Use original_query if provided (strips RAG context for continuation prompts)
+        # For Phase 1, we want the FULL query with RAG context
+        query_for_initial = query
+        query_for_continuation = original_query or query
+
         # Adapt prompt based on content type
         if content_type == ContentType.STORYTELLING:
             # For creative writing using Storyteller agent
             initial_prompt = f"""Write a creative, engaging story based on this request:
 
-{query}
+{query_for_initial}
 
 This is Part 1 of {chunks_needed}. Write at least 200-300 words of actual narrative story content.
 
@@ -1167,7 +1210,7 @@ Respond with JSON containing a 'story' field with your narrative."""
         else:
             # For research/discussion/analysis, use focused prompt
             chunk1_focus = focus_areas.get(1, "fundamental concepts")
-            initial_prompt = f"""Research topic: {query}
+            initial_prompt = f"""Research topic: {query_for_initial}
 
 Part 1 of {chunks_needed}. Write 500-600 words focused EXCLUSIVELY on: {chunk1_focus}
 
@@ -1178,26 +1221,40 @@ CRITICAL REQUIREMENTS:
 - Be technical and specific, not vague or general
 - This is Part 1 of {chunks_needed}, so other parts will cover different aspects
 
-Output JSON with 'context' field containing your detailed explanation as a continuous text string."""
+IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown, no code blocks):
+{{"context": "your detailed explanation here as one continuous string"}}"""
 
         initial_task = DistributedTask(
             task_id="Initial_Content",
             payload={'prompt': initial_prompt, 'model': model},
             priority=8,  # High priority for initial chunk
-            timeout=300
+            timeout=600  # 10 minutes for chunks (CPU can be slow)
         )
 
         def execute_chunk(task: DistributedTask, node_url: str):
             # Use Storyteller for creative content, Researcher for analytical
             if content_type == ContentType.STORYTELLING:
-                agent = Storyteller(model=model, timeout=300)
+                agent = Storyteller(model=model, timeout=600)  # 10 min for CPU
+                agent._hybrid_router_sync = self.hybrid_router_sync
+                agent._load_balancer = None
+                return agent.process(task.payload['prompt'])
             else:
-                agent = Researcher(model=model, timeout=300)
+                agent = Researcher(model=model, timeout=600)  # 10 min for CPU
+                # Override schema for long-form chunks (simpler than full research schema)
+                agent.expected_schema = {"context": str}
 
-            # Inject HybridRouter for intelligent Ollama/RPC routing
-            agent._hybrid_router_sync = self.hybrid_router_sync
-            agent._load_balancer = None  # Disable load balancer, use HybridRouter instead
-            return agent.process(task.payload['prompt'])
+                # Custom system prompt for simplified schema
+                system_prompt = (
+                    "You are an expert research agent. Write detailed technical explanations (500-600 words minimum) "
+                    "with specific equations, mechanisms, data, and examples. Be technical and specific, not vague. "
+                    "Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):\n"
+                    '{"context": "your detailed explanation as one continuous string"}'
+                )
+
+                # Inject HybridRouter for intelligent Ollama/RPC routing
+                agent._hybrid_router_sync = self.hybrid_router_sync
+                agent._load_balancer = None  # Disable load balancer, use HybridRouter instead
+                return agent.call_ollama(task.payload['prompt'], system_prompt=system_prompt, use_trustcall=True)
 
         initial_result = self.parallel_executor.execute_parallel(
             [initial_task],
@@ -1227,17 +1284,61 @@ Output JSON with 'context' field containing your detailed explanation as a conti
                 # Use specific focus area instead of generic continuation
                 focus = focus_areas.get(i, "additional aspects")
 
+                # Get focused RAG context for this chunk if FlockParser enabled
+                chunk_context = ""
+                if self.use_flockparser and self.flockparser_adapter and content_type == ContentType.RESEARCH:
+                    try:
+                        # Build focused query for this chunk's topic
+                        focused_query = f"{query_for_continuation} {focus}"
+                        logger.info(f"   📖 Chunk {i}: Querying FlockParser for '{focus}'")
+
+                        enhanced_chunk_query, chunk_docs = self.flockparser_adapter.enhance_research_query(
+                            focused_query,
+                            top_k=10,  # Fewer docs per chunk
+                            max_context_tokens=1000  # Smaller context per chunk
+                        )
+
+                        if chunk_docs:
+                            logger.info(f"      ✅ Found {len(chunk_docs)} source(s) for chunk {i}")
+                            for doc_name in chunk_docs:
+                                logger.info(f"         • {doc_name}")
+                            # Extract just the RAG context (strip original query)
+                            chunk_context = enhanced_chunk_query.replace(focused_query, "").strip()
+                    except Exception as e:
+                        logger.warning(f"   ⚠️  FlockParser query failed for chunk {i}: {e}")
+
                 if content_type == ContentType.STORYTELLING:
                     continuation_prompt = get_continuation_prompt(
-                        content_type, i, chunks_needed, initial_content, original_query=query
+                        content_type, i, chunks_needed, initial_content, original_query=query_for_continuation
                     )
                 else:
-                    # For research, use focused prompts
-                    continuation_prompt = f"""Research topic: {query}
+                    # For research, use focused prompts with per-chunk RAG context
+                    base_prompt = f"""Research topic: {query_for_continuation}
 
 Part {i} of {chunks_needed}. Write 500-600 words focused SPECIFICALLY on: {focus}
 
-Previous part covered: {self._extract_narrative_from_json(initial_content)[:200]}...
+Previous part covered: {self._extract_narrative_from_json(initial_content)[:200]}..."""
+
+                    # Add focused RAG context if available
+                    if chunk_context:
+                        continuation_prompt = f"""{base_prompt}
+
+📚 Relevant Knowledge Base Context:
+{chunk_context}
+
+CRITICAL REQUIREMENTS:
+- Focus EXCLUSIVELY on {focus} - DO NOT discuss other aspects
+- Write ENTIRELY NEW content - ZERO overlap with Part 1
+- Use the knowledge base context above to add specific technical details
+- Include equations, data, specific examples from the context
+- If you mention something from Part 1, you MUST add NEW information about it
+- Be technical and specific, not vague or repetitive
+
+IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown, no code blocks):
+{{"context": "your detailed explanation here as one continuous string"}}"""
+                    else:
+                        # No RAG context available for this chunk
+                        continuation_prompt = f"""{base_prompt}
 
 CRITICAL REQUIREMENTS:
 - Focus EXCLUSIVELY on {focus} - DO NOT discuss other aspects
@@ -1246,13 +1347,14 @@ CRITICAL REQUIREMENTS:
 - If you mention something from Part 1, you MUST add NEW information about it
 - Be technical and specific, not vague or repetitive
 
-Output JSON with 'context' field containing your detailed explanation."""
+IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown, no code blocks):
+{{"context": "your detailed explanation here as one continuous string"}}"""
 
                 task = DistributedTask(
                     task_id=f"Chunk_{i}",
                     payload={'prompt': continuation_prompt, 'model': model},
                     priority=5,
-                    timeout=300
+                    timeout=600  # 10 minutes for chunks (CPU can be slow)
                 )
                 continuation_tasks.append(task)
 
@@ -1280,10 +1382,73 @@ Output JSON with 'context' field containing your detailed explanation."""
         # Phase 3: Synthesize all chunks into final output
         logger.info(f"🔗 Phase 3: Content Synthesis")
 
-        # Combine all chunks
+        # Combine all chunks with smart summarization for large inputs
+        chunk_summaries = []
+        total_chars = 0
+
+        for chunk in all_chunks:
+            narrative = self._extract_narrative_from_json(chunk['content'])
+            total_chars += len(narrative)
+            chunk_summaries.append({
+                'num': chunk['chunk_num'],
+                'content': narrative
+            })
+
+        # For very large outputs (>15K chars), skip synthesis to preserve content
+        # Small models (llama3.2) struggle to preserve content during synthesis
+        if total_chars > 15000:
+            logger.info(f"   📊 Large output detected ({total_chars} chars)")
+            logger.info(f"   ⚠️  Skipping synthesis to preserve all {chunks_needed} chunks of content")
+            logger.info(f"   ℹ️  Small models often condense content during synthesis - using direct concatenation\n")
+
+            # Just concatenate chunks directly - filter out failed chunks
+            valid_chunks = []
+            for chunk in all_chunks:
+                narrative = self._extract_narrative_from_json(chunk['content'])
+                # Filter out empty, "str", "None", or very short garbage
+                if narrative and narrative not in ["str", "dict", "list", "None"] and len(narrative) > 50:
+                    valid_chunks.append(narrative)
+                else:
+                    logger.warning(f"   ⚠️  Chunk {chunk['chunk_num']} failed - skipping (got: '{narrative[:50] if narrative else 'empty'}'...)")
+
+            final_content = "\n\n".join(valid_chunks)
+
+            total_time = (time.time() - start_time) * 1000
+
+            logger.info(f"\n{'='*60}")
+            logger.info(f"✨ LONG-FORM GENERATION COMPLETE")
+            logger.info(f"{'='*60}\n")
+            logger.info(f"   Total Time: {total_time:.0f}ms")
+            logger.info(f"   Chunks Generated: {chunks_needed}")
+            logger.info(f"   Content Type: {content_type.value}")
+            logger.info(f"   Final Length: {len(final_content)} chars\n")
+
+            cleaned_chunks = [
+                {
+                    'chunk_num': chunk['chunk_num'],
+                    'content': self._extract_narrative_from_json(chunk['content']),
+                    'duration_ms': chunk['duration_ms']
+                }
+                for chunk in all_chunks
+            ]
+
+            return {
+                'result': {
+                    'final_output': final_content,
+                    'chunks': cleaned_chunks,
+                    'content_type': content_type.value
+                },
+                'metrics': {
+                    'total_execution_time': total_time / 1000,
+                    'chunks_generated': chunks_needed,
+                    'mode': 'parallel_multi_turn'
+                }
+            }
+
+        # For smaller outputs, use full synthesis
         combined_content = "\n\n".join([
-            f"## Part {chunk['chunk_num']}\n\n{self._extract_narrative_from_json(chunk['content'])}"
-            for chunk in all_chunks
+            f"## Part {s['num']}\n\n{s['content']}"
+            for s in chunk_summaries
         ])
 
         # Use Editor to synthesize - adapt based on content type
@@ -1295,10 +1460,37 @@ Output JSON with 'context' field containing your detailed explanation."""
 Create a cohesive, well-structured story that flows naturally from beginning to end.
 Smooth out transitions between chapters and ensure consistent characterization.
 
-Respond with JSON containing a 'story' field with the complete narrative."""
+IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown, no code blocks):
+{{"story": "your complete narrative here as one continuous string"}}"""
         else:
             # For research/discussion/analysis, use standard synthesis
-            synthesis_prompt = f"Synthesize the following {chunks_needed} parts into a cohesive, comprehensive {content_type.value}:\n\n{combined_content}"
+            # Count total citations in input to verify they're preserved
+            import re
+            input_citations = re.findall(r'\[\d+\]', combined_content)
+            citation_count = len(input_citations)
+
+            synthesis_prompt = f"""Synthesize the following {chunks_needed} parts into a cohesive, comprehensive {content_type.value}:
+
+{combined_content}
+
+CRITICAL SYNTHESIS REQUIREMENTS:
+- PRESERVE ALL CONTENT - Do NOT condense, summarize, or remove information
+- Each part contains unique information that MUST be included in full
+- Your job is to ORGANIZE and SMOOTH TRANSITIONS, not to reduce length
+- Remove ONLY duplicate phrasing, never substantive content
+- The output should be LONGER or equal length to the input (currently {total_chars} chars)
+- Maintain all technical details, equations, examples, data, and explanations
+- Create logical flow between sections while keeping ALL information
+
+**CRITICAL CITATION PRESERVATION**:
+- The input contains {citation_count} citation markers like [1], [2], [3]
+- You MUST preserve EVERY SINGLE citation marker [1], [2], etc. exactly as they appear
+- DO NOT remove, renumber, or consolidate citations
+- Citations are MANDATORY - your output must contain ALL {citation_count} citation markers
+- If you remove even ONE citation, the output is INVALID
+
+IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown, no code blocks):
+{{"detailed_explanation": "your complete synthesized explanation here as one continuous string with ALL {citation_count} citations preserved"}}"""
 
         synthesis_task = DistributedTask(
             task_id="Synthesis",
@@ -1307,20 +1499,33 @@ Respond with JSON containing a 'story' field with the complete narrative."""
                 'model': model
             },
             priority=9,
-            timeout=600
+            timeout=1200  # 20 minutes for synthesis
         )
 
         def execute_synthesis(task: DistributedTask, node_url: str):
             # Use Storyteller for creative synthesis, Editor for analytical
             if content_type == ContentType.STORYTELLING:
-                agent = Storyteller(model=model, timeout=600)
+                agent = Storyteller(model=model, timeout=1200)  # 20 min for synthesis
+                agent._hybrid_router_sync = self.hybrid_router_sync
+                agent._load_balancer = None
+                return agent.process(task.payload['prompt'])
             else:
-                agent = Editor(model=model, timeout=600)
+                agent = Editor(model=model, timeout=1200)  # 20 min for synthesis
+                # Override schema for synthesis output
+                agent.expected_schema = {"detailed_explanation": str}
 
-            # Inject HybridRouter for intelligent Ollama/RPC routing
-            agent._hybrid_router_sync = self.hybrid_router_sync
-            agent._load_balancer = None  # Disable load balancer, use HybridRouter instead
-            return agent.process(task.payload['prompt'])
+                # Custom system prompt for synthesis
+                system_prompt = (
+                    "You are an expert editor. Synthesize the provided sections into one cohesive, "
+                    "comprehensive explanation. Maintain technical accuracy and smooth flow. "
+                    "Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):\n"
+                    '{"detailed_explanation": "your synthesized explanation as one continuous string"}'
+                )
+
+                # Inject HybridRouter for intelligent Ollama/RPC routing
+                agent._hybrid_router_sync = self.hybrid_router_sync
+                agent._load_balancer = None  # Disable load balancer, use HybridRouter instead
+                return agent.call_ollama(task.payload['prompt'], system_prompt=system_prompt, use_trustcall=True)
 
         synthesis_result = self.parallel_executor.execute_parallel(
             [synthesis_task],
@@ -1329,18 +1534,49 @@ Respond with JSON containing a 'story' field with the complete narrative."""
         )
 
         # Extract narrative from synthesis result
-        logger.debug(f"Synthesis merged_result type: {type(synthesis_result.merged_result)}")
-        logger.debug(f"Synthesis merged_result value: {synthesis_result.merged_result}")
+        logger.info(f"🔍 DEBUG: Synthesis merged_result type: {type(synthesis_result.merged_result)}")
+
+        # Log first 500 chars of the actual content for debugging
+        if synthesis_result.merged_result:
+            preview = str(synthesis_result.merged_result)[:500]
+            logger.info(f"🔍 DEBUG: Synthesis merged_result preview: {preview}...")
+        else:
+            logger.warning(f"⚠️  Synthesis merged_result is empty or None")
 
         final_content = self._extract_narrative_from_json(synthesis_result.merged_result)
 
-        if not final_content or final_content == "None":
+        # Log extraction result
+        if final_content and isinstance(final_content, str) and len(final_content) > 100:
+            logger.info(f"✅ Successfully extracted {len(final_content)} chars from synthesis result")
+        else:
+            logger.error(f"❌ Extraction FAILED - got: {type(final_content)} with value: {repr(final_content)[:200]}")
+            logger.error(f"   This will cause raw API response to display!")
+
+        # Check if synthesis produced unusable content (meta-messages, errors, or empty)
+        is_unusable = (
+            not final_content or
+            final_content == "None" or
+            len(final_content) < 100 or  # Too short to be real synthesis
+            "system requires" in final_content.lower() or
+            "schema" in final_content.lower() and "matches" in final_content.lower() or
+            "respond with json" in final_content.lower() or
+            "must respond" in final_content.lower()
+        )
+
+        if is_unusable:
             # Fallback: just concatenate the chunks without synthesis
-            logger.warning("Synthesis produced empty result, using direct concatenation")
-            final_content = "\n\n".join([
-                self._extract_narrative_from_json(chunk['content'])
-                for chunk in all_chunks
-            ])
+            logger.warning(f"Synthesis produced unusable result (len={len(final_content) if final_content else 0}), using direct concatenation")
+
+            # Filter out failed chunks
+            valid_chunks = []
+            for chunk in all_chunks:
+                narrative = self._extract_narrative_from_json(chunk['content'])
+                if narrative and narrative not in ["str", "dict", "list", "None"] and len(narrative) > 50:
+                    valid_chunks.append(narrative)
+                else:
+                    logger.warning(f"   ⚠️  Chunk {chunk['chunk_num']} produced garbage - skipping")
+
+            final_content = "\n\n".join(valid_chunks)
 
         total_time = (time.time() - start_time) * 1000
 
@@ -1381,7 +1617,8 @@ Respond with JSON containing a 'story' field with the complete narrative."""
         query: str,
         content_type: ContentType,
         chunks_needed: int,
-        model: str
+        model: str,
+        original_query: str = None
     ) -> dict:
         """
         Generate long-form content sequentially (fallback for single node).
@@ -1390,15 +1627,19 @@ Respond with JSON containing a 'story' field with the complete narrative."""
         all_chunks = []
         accumulated_content = ""
 
+        # Use original_query if provided (strips RAG context for continuation prompts)
+        query_for_initial = query
+        query_for_continuation = original_query or query
+
         for chunk_num in range(1, chunks_needed + 1):
             logger.info(f"📝 Generating Chunk {chunk_num}/{chunks_needed}")
 
             if chunk_num == 1:
-                # Use the enhanced initial prompt for first chunk
+                # Use the enhanced initial prompt for first chunk WITH RAG context
                 if content_type == ContentType.STORYTELLING:
                     prompt = f"""Write a creative, engaging story based on this request:
 
-{query}
+{query_for_initial}
 
 This is Part 1 of {chunks_needed}. Write at least 200-300 words of actual narrative story content.
 
@@ -1410,7 +1651,7 @@ IMPORTANT Requirements:
 
 Respond with JSON containing a 'story' field with your narrative."""
                 else:
-                    prompt = f"""Research topic: {query}
+                    prompt = f"""Research topic: {query_for_initial}
 
 Part 1 of {chunks_needed}. Write 500-600 words EXCLUSIVELY on fundamental concepts, basic definitions, and foundational principles.
 
@@ -1421,24 +1662,106 @@ CRITICAL REQUIREMENTS:
 - Be technical and specific, not vague or general
 - This is Part 1, so later parts will cover math formalism, experiments, applications, and future research
 
-Output JSON with 'context' field containing your detailed explanation as a continuous text string."""
+IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown, no code blocks):
+{{"context": "your detailed explanation here as one continuous string"}}"""
             else:
-                prompt = get_continuation_prompt(
-                    content_type, chunk_num, chunks_needed, accumulated_content, original_query=query
-                )
+                # Get focused RAG context for this chunk if FlockParser enabled
+                chunk_context = ""
+                if self.use_flockparser and self.flockparser_adapter and content_type == ContentType.RESEARCH:
+                    try:
+                        # Get focus area for this chunk
+                        focus_areas = self._get_focus_areas_for_chunks(content_type, chunks_needed)
+                        focus = focus_areas.get(chunk_num, "additional aspects")
+
+                        # Build focused query for this chunk's topic
+                        focused_query = f"{query_for_continuation} {focus}"
+                        logger.info(f"   📖 Chunk {chunk_num}: Querying FlockParser for '{focus}'")
+
+                        enhanced_chunk_query, chunk_docs = self.flockparser_adapter.enhance_research_query(
+                            focused_query,
+                            top_k=10,
+                            max_context_tokens=1000
+                        )
+
+                        if chunk_docs:
+                            logger.info(f"      ✅ Found {len(chunk_docs)} source(s) for chunk {chunk_num}")
+                            for doc_name in chunk_docs:
+                                logger.info(f"         • {doc_name}")
+                            # Extract just the RAG context
+                            chunk_context = enhanced_chunk_query.replace(focused_query, "").strip()
+                    except Exception as e:
+                        logger.warning(f"   ⚠️  FlockParser query failed for chunk {chunk_num}: {e}")
+
+                # Use continuation prompt with optional per-chunk RAG context
+                if content_type == ContentType.STORYTELLING:
+                    prompt = get_continuation_prompt(
+                        content_type, chunk_num, chunks_needed, accumulated_content, original_query=query_for_continuation
+                    )
+                else:
+                    # For research, build focused prompt with per-chunk RAG
+                    focus_areas = self._get_focus_areas_for_chunks(content_type, chunks_needed)
+                    focus = focus_areas.get(chunk_num, "additional aspects")
+
+                    base_prompt = f"""Research topic: {query_for_continuation}
+
+Part {chunk_num} of {chunks_needed}. Write 500-600 words focused SPECIFICALLY on: {focus}
+
+Previous parts covered: {accumulated_content[:300]}..."""
+
+                    if chunk_context:
+                        prompt = f"""{base_prompt}
+
+📚 Relevant Knowledge Base Context:
+{chunk_context}
+
+CRITICAL REQUIREMENTS:
+- Focus EXCLUSIVELY on {focus} - DO NOT discuss other aspects
+- Write ENTIRELY NEW content - ZERO overlap with previous parts
+- Use the knowledge base context above to add specific technical details
+- Include equations, data, specific examples from the context
+- Be technical and specific, not vague or repetitive
+
+IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown, no code blocks):
+{{"context": "your detailed explanation here as one continuous string"}}"""
+                    else:
+                        prompt = f"""{base_prompt}
+
+CRITICAL REQUIREMENTS:
+- Focus EXCLUSIVELY on {focus} - DO NOT discuss other aspects
+- Write ENTIRELY NEW content - ZERO overlap with previous parts
+- Include technical details, equations, data, specific examples
+- Be technical and specific, not vague or repetitive
+
+IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown, no code blocks):
+{{"context": "your detailed explanation here as one continuous string"}}"""
 
             # Generate chunk with appropriate agent
             if content_type == ContentType.STORYTELLING:
-                agent = Storyteller(model=model, timeout=300)
+                agent = Storyteller(model=model, timeout=600)  # 10 min for CPU
+                agent._hybrid_router_sync = self.hybrid_router_sync
+                agent._load_balancer = self.load_balancer if self.use_sollol else None
+
+                chunk_start = time.time()
+                chunk_content = agent.process(prompt)
             else:
-                agent = Researcher(model=model, timeout=300)
+                agent = Researcher(model=model, timeout=600)  # 10 min for CPU
+                # Override schema for long-form chunks (simpler than full research schema)
+                agent.expected_schema = {"context": str}
 
-            # Inject HybridRouter for intelligent Ollama/RPC routing
-            agent._hybrid_router_sync = self.hybrid_router_sync
-            agent._load_balancer = self.load_balancer if self.use_sollol else None
+                # Custom system prompt for simplified schema
+                system_prompt = (
+                    "You are an expert research agent. Write detailed technical explanations (500-600 words minimum) "
+                    "with specific equations, mechanisms, data, and examples. Be technical and specific, not vague. "
+                    "Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):\n"
+                    '{"context": "your detailed explanation as one continuous string"}'
+                )
 
-            chunk_start = time.time()
-            chunk_content = agent.process(prompt)
+                # Inject HybridRouter for intelligent Ollama/RPC routing
+                agent._hybrid_router_sync = self.hybrid_router_sync
+                agent._load_balancer = self.load_balancer if self.use_sollol else None
+
+                chunk_start = time.time()
+                chunk_content = agent.call_ollama(prompt, system_prompt=system_prompt, use_trustcall=True)
             chunk_duration = (time.time() - chunk_start) * 1000
 
             all_chunks.append({
@@ -1455,23 +1778,63 @@ Output JSON with 'context' field containing your detailed explanation as a conti
         # Synthesize
         logger.info(f"🔗 Synthesizing final output (this may take longer for comprehensive synthesis)")
         if content_type == ContentType.STORYTELLING:
-            editor = Storyteller(model=model, timeout=600)
+            editor = Storyteller(model=model, timeout=1200)  # 20 min for synthesis
+            editor._hybrid_router_sync = self.hybrid_router_sync
+            editor._load_balancer = self.load_balancer if self.use_sollol else None
+
+            final_content = editor.process(
+                f"Synthesize into cohesive {content_type.value}:\n\n{accumulated_content}"
+            )
         else:
-            editor = Editor(model=model, timeout=600)
+            editor = Editor(model=model, timeout=1200)  # 20 min for synthesis
+            # Override schema for synthesis output
+            editor.expected_schema = {"detailed_explanation": str}
 
-        # Inject HybridRouter for intelligent Ollama/RPC routing
-        editor._hybrid_router_sync = self.hybrid_router_sync
-        editor._load_balancer = self.load_balancer if self.use_sollol else None
+            # Custom system prompt for synthesis
+            system_prompt = (
+                "You are an expert editor. Synthesize the provided sections into one cohesive, "
+                "comprehensive explanation. Maintain technical accuracy and smooth flow. "
+                "Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):\n"
+                '{"detailed_explanation": "your synthesized explanation as one continuous string"}'
+            )
 
-        final_content = editor.process(
-            f"Synthesize into cohesive {content_type.value}:\n\n{accumulated_content}"
-        )
+            # Inject HybridRouter for intelligent Ollama/RPC routing
+            editor._hybrid_router_sync = self.hybrid_router_sync
+            editor._load_balancer = self.load_balancer if self.use_sollol else None
+
+            final_content = editor.call_ollama(
+                f"Synthesize into cohesive {content_type.value}:\n\n{accumulated_content}",
+                system_prompt=system_prompt,
+                use_trustcall=True
+            )
 
         total_time = (time.time() - start_time) * 1000
 
         logger.info(f"\n{'='*60}")
         logger.info(f"✨ LONG-FORM GENERATION COMPLETE")
         logger.info(f"{'='*60}\n")
+
+        # Extract and validate final content
+        extracted_final_content = self._extract_narrative_from_json(final_content)
+
+        # Check if synthesis produced unusable content (meta-messages, errors, or empty)
+        is_unusable = (
+            not extracted_final_content or
+            extracted_final_content == "None" or
+            len(extracted_final_content) < 100 or  # Too short to be real synthesis
+            "system requires" in extracted_final_content.lower() or
+            "schema" in extracted_final_content.lower() and "matches" in extracted_final_content.lower() or
+            "respond with json" in extracted_final_content.lower() or
+            "must respond" in extracted_final_content.lower()
+        )
+
+        if is_unusable:
+            # Fallback: just concatenate the chunks without synthesis
+            logger.warning(f"Synthesis produced unusable result (len={len(extracted_final_content) if extracted_final_content else 0}), using direct concatenation")
+            extracted_final_content = "\n\n".join([
+                self._extract_narrative_from_json(chunk['content'])
+                for chunk in all_chunks
+            ])
 
         # Clean chunks by extracting narratives (remove JSON metadata)
         cleaned_chunks = [
@@ -1485,7 +1848,7 @@ Output JSON with 'context' field containing your detailed explanation as a conti
 
         return {
             'result': {
-                'final_output': self._extract_narrative_from_json(final_content),
+                'final_output': extracted_final_content,
                 'chunks': cleaned_chunks,
                 'content_type': content_type.value
             },

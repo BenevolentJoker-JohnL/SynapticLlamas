@@ -61,15 +61,46 @@ class TrustCallValidator:
             logger.warning(f"⚠️  {agent_name} - Failed to parse JSON, attempting extraction")
             parsed_json = self._extract_json_from_text(raw_output)
 
+            # If extraction also failed, attempt regeneration up to max_repair_attempts
             if not parsed_json:
-                logger.error(f"❌ {agent_name} - Could not extract JSON from output")
-                return {
-                    "agent": agent_name,
-                    "status": "error",
-                    "format": "text",
-                    "data": raw_output,
-                    "error": "Could not extract valid JSON"
-                }
+                logger.warning(f"⚠️  {agent_name} - Extraction failed, attempting regeneration")
+
+                for attempt in range(1, self.max_repair_attempts + 1):
+                    logger.info(f"🔄 {agent_name} - Regeneration attempt {attempt}/{self.max_repair_attempts}")
+
+                    # Build regeneration prompt
+                    regen_prompt = self._build_regeneration_prompt(
+                        raw_output,
+                        expected_schema,
+                        attempt
+                    )
+
+                    # Get new response from LLM
+                    new_output = repair_fn(regen_prompt)
+
+                    # Try to parse the regenerated output
+                    parsed_json, errors = self._try_parse_json(new_output)
+
+                    if not parsed_json:
+                        # Try extraction again
+                        parsed_json = self._extract_json_from_text(new_output)
+
+                    if parsed_json:
+                        logger.info(f"✅ {agent_name} - Regeneration successful on attempt {attempt}")
+                        break
+
+                    logger.warning(f"⚠️  {agent_name} - Regeneration attempt {attempt} failed")
+
+                # If still no valid JSON after all attempts
+                if not parsed_json:
+                    logger.error(f"❌ {agent_name} - Could not extract JSON after {self.max_repair_attempts} regeneration attempts")
+                    return {
+                        "agent": agent_name,
+                        "status": "error",
+                        "format": "text",
+                        "data": raw_output,
+                        "error": f"Could not extract valid JSON after {self.max_repair_attempts} attempts"
+                    }
 
         # Validate against schema
         validation_errors = self._validate_against_schema(parsed_json, expected_schema)
@@ -202,6 +233,29 @@ Example format:
 ]
 
 Attempt {attempt}/{self.max_repair_attempts}. Provide the JSON Patch now:"""
+
+    def _build_regeneration_prompt(self, failed_output: str, expected_schema: Dict, attempt: int) -> str:
+        """Build prompt for LLM to regenerate response in correct JSON format."""
+        schema_desc = json.dumps(
+            {k: v.__name__ if hasattr(v, '__name__') else str(v) for k, v in expected_schema.items()},
+            indent=2
+        )
+
+        return f"""Your previous response did not contain valid JSON. Please regenerate your response in the correct format.
+
+Expected JSON Schema:
+{schema_desc}
+
+CRITICAL REQUIREMENTS:
+1. Your response MUST be ONLY valid JSON - no markdown, no code blocks, no explanation
+2. The JSON must match the schema exactly
+3. Do NOT wrap the JSON in ```json``` code blocks
+4. Do NOT include any text before or after the JSON
+
+Example of correct format:
+{{"context": "your detailed explanation here as a single string"}}
+
+Attempt {attempt}/{self.max_repair_attempts}. Generate the response now in valid JSON:"""
 
 
 # Global instance for easy access

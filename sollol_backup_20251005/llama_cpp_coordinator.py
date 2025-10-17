@@ -24,6 +24,14 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+# Import Redis log publisher
+try:
+    from redis_log_publisher import RedisLogPublisher, ComponentType, LogLevel, get_global_publisher
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    logger.warning("redis_log_publisher not available - Redis logging disabled")
+
 
 @dataclass
 class RPCBackend:
@@ -65,7 +73,8 @@ class LlamaCppCoordinator:
         host: str = "127.0.0.1",
         port: int = 8080,
         n_gpu_layers: int = 99,
-        ctx_size: int = 2048
+        ctx_size: int = 2048,
+        redis_publisher: Optional['RedisLogPublisher'] = None
     ):
         """
         Initialize coordinator.
@@ -77,6 +86,7 @@ class LlamaCppCoordinator:
             port: Port for llama-server HTTP API
             n_gpu_layers: Number of layers to attempt GPU offload
             ctx_size: Context window size
+            redis_publisher: Optional Redis publisher for live log streaming
         """
         self.model_path = model_path
         self.rpc_backends = rpc_backends
@@ -87,6 +97,12 @@ class LlamaCppCoordinator:
 
         self.process: Optional[subprocess.Popen] = None
         self.http_client = httpx.AsyncClient(timeout=300.0)
+
+        # Redis publisher for live logs
+        self.redis_publisher = redis_publisher
+        if self.redis_publisher is None and REDIS_AVAILABLE:
+            # Try to use global publisher if available
+            self.redis_publisher = get_global_publisher()
 
     async def start(self):
         """
@@ -163,8 +179,28 @@ class LlamaCppCoordinator:
                 f"with {len(self.rpc_backends)} RPC backends"
             )
 
+            # Publish coordinator start event to Redis
+            if self.redis_publisher:
+                self.redis_publisher.publish_coordinator_start(
+                    model_path=self.model_path,
+                    port=self.port,
+                    rpc_backends=[b.address for b in self.rpc_backends],
+                    details={
+                        "host": self.host,
+                        "n_gpu_layers": self.n_gpu_layers,
+                        "ctx_size": self.ctx_size
+                    }
+                )
+
         except Exception as e:
             logger.error(f"Failed to start llama-server: {e}")
+
+            # Publish error to Redis
+            if self.redis_publisher:
+                self.redis_publisher.publish_error(
+                    component=ComponentType.COORDINATOR,
+                    error_message=f"Failed to start coordinator: {str(e)}"
+                )
             raise
 
     async def _wait_for_ready(self, timeout: float = 1200.0):
@@ -183,6 +219,13 @@ class LlamaCppCoordinator:
                 if not line:
                     break
                 line = line.rstrip()
+
+                # Publish all raw logs to Redis
+                if self.redis_publisher:
+                    self.redis_publisher.publish_raw_log(
+                        log_line=line,
+                        source="coordinator"
+                    )
 
                 # Filter for important RPC distribution logs
                 if any(keyword in line for keyword in [
@@ -301,6 +344,10 @@ class LlamaCppCoordinator:
                 self.process.kill()
 
             logger.info("llama-server coordinator stopped")
+
+            # Publish coordinator stop event to Redis
+            if self.redis_publisher:
+                self.redis_publisher.publish_coordinator_stop()
 
         await self.http_client.aclose()
 

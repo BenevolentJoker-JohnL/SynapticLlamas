@@ -119,7 +119,11 @@ def print_node_table(nodes: list):
     for node in nodes:
         status = "✓ Healthy" if node.get('is_healthy') else "✗ Down"
         gpu = "🎮 Yes" if node.get('has_gpu') else "💻 No"
-        load = f"{node.get('load_score', 0):.2f}"
+        # Convert load_score to float safely (may be string from API)
+        try:
+            load = f"{float(node.get('load_score', 0)):.2f}"
+        except (ValueError, TypeError):
+            load = "N/A"
 
         table.add_row(
             node.get('name', 'unknown'),
@@ -155,13 +159,30 @@ def print_metrics_table(metrics: dict):
 
 
 def print_json_output(data: dict):
-    """Print JSON with syntax highlighting."""
+    """Print JSON with syntax highlighting - extracts clean content from API responses."""
     import json
-    json_str = json.dumps(data, indent=2)
+
+    # Try to extract clean content from nested response structures
+    clean_data = data
+
+    # Check if this is an Ollama/OpenAI API response with nested structure
+    if isinstance(data, dict):
+        # Try to extract the actual content message
+        if 'message' in data and isinstance(data['message'], dict):
+            if 'content' in data['message']:
+                # This is likely an Ollama response - extract just the content
+                clean_data = {'response': data['message']['content']}
+        elif 'choices' in data and isinstance(data['choices'], list) and len(data['choices']) > 0:
+            # This is likely an OpenAI-style response
+            choice = data['choices'][0]
+            if 'message' in choice and 'content' in choice['message']:
+                clean_data = {'response': choice['message']['content']}
+
+    json_str = json.dumps(clean_data, indent=2, ensure_ascii=False)
 
     panel = Panel(
         Syntax(json_str, "json", theme="monokai", background_color="default"),
-        title="[bold red]JSON OUTPUT[/bold red]",
+        title="[bold red]OUTPUT[/bold red]",
         border_style="red",
         box=box.DOUBLE
     )

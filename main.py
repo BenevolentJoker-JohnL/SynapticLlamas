@@ -68,6 +68,12 @@ logging.getLogger('werkzeug').setLevel(logging.ERROR)  # Suppress Flask HTTP log
 logging.getLogger('gevent.pywsgi').setLevel(logging.ERROR)  # Suppress gevent HTTP logs
 logging.getLogger('sollol.dashboard.access').setLevel(logging.CRITICAL + 1)  # Suppress dashboard HTTP access logs
 
+# Suppress HTTP request logging from httpx and requests (these are VERY noisy)
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('requests').setLevel(logging.WARNING)
+
 # Now import other modules
 from orchestrator import run_parallel_agents
 from distributed_orchestrator import DistributedOrchestrator
@@ -87,6 +93,15 @@ from rich.panel import Panel
 
 # Import SOLLOL modules
 from sollol.rpc_registry import RPCBackendRegistry
+
+# Import Redis log publisher
+try:
+    from redis_log_publisher import initialize_global_publisher, get_global_publisher, shutdown_global_publisher
+    REDIS_LOGGING_AVAILABLE = True
+except ImportError:
+    REDIS_LOGGING_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("redis_log_publisher not available - Redis logging disabled")
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +135,14 @@ def load_config():
         # Distribution settings - TWO distinct modes:
         "task_distribution_enabled": True,   # Parallel agent execution across Ollama nodes
         "model_sharding_enabled": False,     # RPC-based model distribution (llama.cpp)
-        "rpc_backends": []  # List of RPC backend configs for model sharding
+        "rpc_backends": [],  # List of RPC backend configs for model sharding
+
+        # Redis reporting settings
+        "redis_logging_enabled": False,  # Enable Redis log publishing
+        "redis_host": "localhost",
+        "redis_port": 6379,
+        "redis_db": 0,
+        "redis_password": None  # Optional Redis password
     }
 
     if os.path.exists(CONFIG_PATH):
@@ -186,6 +208,27 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
     # Dashboard settings
     dashboard_verbose = config.get("dashboard_verbose", True)
     dashboard_enable_dask = config.get("dashboard_enable_dask", True)  # Uses threaded workers - logging works!
+
+    # Redis logging settings
+    redis_logging_enabled = config.get("redis_logging_enabled", False)
+    redis_host = config.get("redis_host", "localhost")
+    redis_port = config.get("redis_port", 6379)
+    redis_db = config.get("redis_db", 0)
+    redis_password = config.get("redis_password", None)
+
+    # Initialize Redis publisher if enabled
+    if redis_logging_enabled and REDIS_LOGGING_AVAILABLE:
+        try:
+            initialize_global_publisher(
+                host=redis_host,
+                port=redis_port,
+                db=redis_db,
+                password=redis_password,
+                enabled=True
+            )
+            logger.info(f"📡 Redis log publishing initialized ({redis_host}:{redis_port})")
+        except Exception as e:
+            logger.warning(f"Failed to initialize Redis publisher: {e}")
 
     # Helper to auto-save settings (defined early so it can be used below)
     def update_config(**kwargs):
@@ -287,6 +330,10 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
         console.print("\n[bold red]📚 FLOCKPARSER RAG[/bold red]")
         rag_status = "[green]ON[/green]" if flockparser_enabled else "[dim]OFF[/dim]"
         print_command(f"rag on/off [{rag_status}]", "Toggle PDF RAG enhancement")
+
+        console.print("\n[bold red]📡 REDIS LOGGING[/bold red]")
+        redis_status = "[green]ON[/green]" if redis_logging_enabled else "[dim]OFF[/dim]"
+        print_command(f"redis on/off [{redis_status}]", f"Toggle Redis log publishing ({redis_host}:{redis_port})")
 
         console.print("\n[bold red]⚡ DISTRIBUTION MODES[/bold red]")
         task_status = "Task: " + ("[green]ON[/green]" if task_distribution_enabled else "[dim]OFF[/dim]")
@@ -621,6 +668,47 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         print("✅ FlockParser RAG DISABLED\n")
                     else:
                         print("❌ Use 'rag on' or 'rag off'\n")
+
+            # Redis logging toggle
+            elif command == 'redis':
+                if len(parts) < 2:
+                    print(f"❌ Usage: redis [on|off]\n")
+                else:
+                    toggle = parts[1].lower()
+                    if toggle == 'on':
+                        if not REDIS_LOGGING_AVAILABLE:
+                            print("❌ Redis logging not available (redis_log_publisher module not found)\n")
+                        else:
+                            redis_logging_enabled = True
+                            update_config(redis_logging_enabled=True)
+                            # Initialize Redis publisher
+                            try:
+                                initialize_global_publisher(
+                                    host=redis_host,
+                                    port=redis_port,
+                                    db=redis_db,
+                                    password=redis_password,
+                                    enabled=True
+                                )
+                                print(f"✅ Redis log publishing ENABLED")
+                                print(f"   Publishing to {redis_host}:{redis_port}")
+                                print("   Channels:")
+                                print("     • synapticllamas:llama_cpp:logs (all logs)")
+                                print("     • synapticllamas:llama_cpp:coordinator (coordinator events)")
+                                print("     • synapticllamas:llama_cpp:rpc_backends (RPC backend events)")
+                                print("     • synapticllamas:llama_cpp:raw (raw stdout logs)\n")
+                            except Exception as e:
+                                print(f"❌ Failed to initialize Redis publisher: {e}\n")
+                                redis_logging_enabled = False
+                                update_config(redis_logging_enabled=False)
+                    elif toggle == 'off':
+                        redis_logging_enabled = False
+                        update_config(redis_logging_enabled=False)
+                        if REDIS_LOGGING_AVAILABLE:
+                            shutdown_global_publisher()
+                        print("✅ Redis log publishing DISABLED\n")
+                    else:
+                        print("❌ Use 'redis on' or 'redis off'\n")
 
             # Dashboard verbose toggle
             elif command == 'verbose':
@@ -1267,7 +1355,30 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
                 # Display final markdown output
                 markdown_output = result['result'].get('final_output', '')
+
+                # Debug logging
+                logger.debug(f"DEBUG: markdown_output type: {type(markdown_output)}")
+                logger.debug(f"DEBUG: markdown_output length: {len(str(markdown_output)) if markdown_output else 0}")
+                logger.debug(f"DEBUG: result['result'] keys: {list(result['result'].keys()) if isinstance(result['result'], dict) else 'NOT A DICT'}")
+
+                # If no final_output, try to extract from nested structure
+                if not markdown_output or not isinstance(markdown_output, str):
+                    # Try common response structures
+                    result_data = result['result']
+                    if 'message' in result_data and isinstance(result_data['message'], dict):
+                        # Ollama response format
+                        markdown_output = result_data['message'].get('content', '')
+                        logger.info(f"✅ Extracted content from Ollama format (length: {len(markdown_output)} chars)")
+                    elif 'choices' in result_data and isinstance(result_data['choices'], list):
+                        # OpenAI response format
+                        if len(result_data['choices']) > 0:
+                            choice = result_data['choices'][0]
+                            if 'message' in choice:
+                                markdown_output = choice['message'].get('content', '')
+                                logger.info(f"✅ Extracted content from OpenAI format (length: {len(markdown_output)} chars)")
+
                 if isinstance(markdown_output, str) and markdown_output:
+                    logger.info(f"📄 Displaying markdown panel (length: {len(markdown_output)} chars)")
                     console.print(Panel(
                         Markdown(markdown_output),
                         title="[bold red]FINAL ANSWER[/bold red]",
@@ -1275,7 +1386,9 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         box=box.DOUBLE
                     ))
                 else:
-                    # Fallback to JSON if no markdown
+                    # Fallback to cleaned JSON output
+                    logger.warning(f"⚠️  No markdown content found, falling back to JSON display")
+                    logger.warning(f"   markdown_output: {repr(markdown_output)[:100]}")
                     print_json_output(result['result'])
 
                 # Show execution summary

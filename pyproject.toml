@@ -1,3 +1,111 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synaptic-llamas"
+version = "0.1.0"
+authors = [
+    {name = "BenevolentJoker-JohnL", email = "benevolentjoker@gmail.com"}
+]
+description = "Distributed Parallel AI Agent Orchestration with Intelligent Load Balancing - integrates with FlockParser for RAG and SOLLOL for distributed inference"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Distributed Computing",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: OS Independent",
+]
+keywords = [
+    "ai",
+    "llm",
+    "distributed",
+    "orchestration",
+    "load-balancing",
+    "ollama",
+    "agents",
+    "flockparser",
+    "sollol",
+    "rag",
+    "multi-agent",
+]
+dependencies = [
+    "requests>=2.31.0",
+    "httpx>=0.24.0",
+    "ipaddress>=1.0.23",
+    "dask[distributed]>=2024.1.0",
+    "rich>=13.7.0",
+    "flask",
+    "flask-cors",
+    "flask-sock",
+    "waitress>=3.0.0",
+    "asyncio>=3.4.3",
+    "sollol>=0.9.31",
+    "flockparser>=1.0.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.0.0",
+    "flake8>=6.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/BenevolentJoker-JohnL/SynapticLlamas"
+Documentation = "https://github.com/BenevolentJoker-JohnL/SynapticLlamas/blob/main/README.md"
+Repository = "https://github.com/BenevolentJoker-JohnL/SynapticLlamas"
+"Bug Tracker" = "https://github.com/BenevolentJoker-JohnL/SynapticLlamas/issues"
+
+[project.scripts]
+synaptic-llamas = "main:main"
+
+[tool.setuptools]
+packages = ["agents"]
+py-modules = [
+    "main",
+    "orchestrator",
+    "collaborative_workflow",
+    "json_pipeline",
+    "quality_assurance",
+    "aggregator",
+    "config",
+    "load_balancer",
+    "adaptive_strategy",
+    "input_validation",
+    "error_handling",
+    "sollol_adapter",
+    "benchmark",
+    "dask_executor",
+    "content_detector",
+    "node_cluster",
+    "network_utils",
+    "hybrid_router_sync",
+    "node_registry",
+    "json_to_markdown",
+    "flockparser_adapter",
+    "distributed_orchestrator",
+    "console_theme",
+    "ollama_node",
+    "trustcall",
+]
+
+[tool.setuptools.package-data]
+"*" = ["*.md", "*.yaml", "*.yml", "LICENSE"]
+
 [tool.black]
 line-length = 100
 target-version = ['py38', 'py39', 'py310', 'py311']

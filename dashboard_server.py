@@ -16,6 +16,14 @@ from flask import Flask, jsonify, send_file
 from flask_cors import CORS
 from flask_sock import Sock
 
+# Import Redis log publisher
+try:
+    from redis_log_publisher import RedisLogPublisher, ComponentType, LogLevel, get_global_publisher
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    logging.warning("redis_log_publisher not available - Redis logging disabled")
+
 # Centralized logging queue
 log_queue = queue.Queue()
 
@@ -59,6 +67,7 @@ registry = None
 load_balancer = None
 hybrid_router = None  # For llama.cpp monitoring
 rpc_backend_registry = None  # For RPC backend monitoring
+redis_publisher = None  # For Redis log publishing
 
 def get_dashboard_data():
     """Get comprehensive dashboard data."""
@@ -232,7 +241,7 @@ def ws_dashboard(ws):
         except Exception as e:
             logger.warning(f"Dashboard WebSocket client disconnected: {e}")
             break
-        time.sleep(10)  # Update every 10 seconds
+        time.sleep(30)  # Update every 30 seconds (reduced from 10s)
 
 @sock.route('/ws/logs')
 def ws_logs(ws):
@@ -250,168 +259,46 @@ def ws_logs(ws):
 
 @sock.route('/ws/ollama_logs')
 def ws_ollama_logs(ws):
-    """WebSocket endpoint for streaming Ollama node activity."""
-    logger.info("Ollama logs WebSocket client connected.")
+    """
+    WebSocket endpoint for streaming Ollama node activity.
 
-    # Send initial connection message
+    NOTE: This is a LEGACY endpoint that should NOT be doing its own polling.
+    SynapticLlamas should report events to SOLLOL dashboard instead.
+
+    This endpoint is kept for backward compatibility but should be deprecated.
+    Use SOLLOL unified dashboard for monitoring instead.
+    """
+    logger.warning("ws_ollama_logs is deprecated - use SOLLOL unified dashboard instead")
+
+    # Send deprecation message
     try:
-        init_msg = {
+        deprecation_msg = {
             'timestamp': time.time(),
             'node': 'system',
-            'type': 'info',
-            'message': '🔌 Connected to Ollama monitoring',
-            'level': 'info'
+            'type': 'warning',
+            'message': '⚠️  This monitoring endpoint is deprecated. Use SOLLOL unified dashboard at port 8080',
+            'level': 'warning'
         }
-        ws.send(json.dumps(init_msg))
+        ws.send(json.dumps(deprecation_msg))
     except Exception as e:
-        logger.error(f"Failed to send init message: {e}")
+        logger.error(f"Failed to send message: {e}")
+        return
 
-    # Track previous state to detect changes
-    previous_state = {}
-
-    while True:
-        try:
-            if not registry:
-                logger.warning("No registry available for Ollama logs")
-                time.sleep(2)
-                continue
-
-            if len(registry.nodes) == 0:
-                logger.warning("Registry has no nodes")
-                time.sleep(2)
-                continue
-
-            # Poll all nodes for their current state
-            logs = []
-            for url, node in registry.nodes.items():
-                try:
-                    # Get currently loaded models
-                    response = requests.get(f"{url}/api/ps", timeout=2)
-                    if response.status_code == 200:
-                        data = response.json()
-                        models = data.get('models', [])
-
-                        # Create state snapshot
-                        current_state = {
-                            'loaded_models': [m['name'] for m in models],
-                            'total_vram': sum(m.get('size_vram', 0) for m in models),
-                            'model_count': len(models),
-                        }
-
-                        # Detect changes
-                        prev = previous_state.get(url, {})
-
-                        # New models loaded
-                        prev_models = set(prev.get('loaded_models', []))
-                        curr_models = set(current_state['loaded_models'])
-
-                        newly_loaded = curr_models - prev_models
-                        unloaded = prev_models - curr_models
-
-                        if newly_loaded:
-                            for model in newly_loaded:
-                                log_entry = {
-                                    'timestamp': time.time(),
-                                    'node': url,
-                                    'type': 'model_load',
-                                    'message': f"✅ Model loaded: {model}",
-                                    'level': 'info'
-                                }
-                                logs.append(json.dumps(log_entry))
-
-                        if unloaded:
-                            for model in unloaded:
-                                log_entry = {
-                                    'timestamp': time.time(),
-                                    'node': url,
-                                    'type': 'model_unload',
-                                    'message': f"⏹️  Model unloaded: {model}",
-                                    'level': 'info'
-                                }
-                                logs.append(json.dumps(log_entry))
-
-                        # Only log when models are actively processing (check processing time)
-                        if models:
-                            for model_info in models:
-                                model_name = model_info['name']
-                                # Check if model is actively processing by looking at processing time
-                                processor = model_info.get('processor', {})
-                                if processor:  # Model is actively being used
-                                    size_vram = model_info.get('size_vram', 0) / (1024**3)
-                                    log_entry = {
-                                        'timestamp': time.time(),
-                                        'node': url,
-                                        'type': 'model_processing',
-                                        'message': f"🔄 Processing: {model_name} (VRAM: {size_vram:.2f}GB)",
-                                        'level': 'info'
-                                    }
-                                    logs.append(json.dumps(log_entry))
-
-                        # Store current state
-                        previous_state[url] = current_state
-                        previous_state[url]['was_reachable'] = True
-
-                except Exception as e:
-                    # Node unreachable
-                    if url in previous_state and previous_state[url].get('was_reachable', True):
-                        log_entry = {
-                            'timestamp': time.time(),
-                            'node': url,
-                            'type': 'error',
-                            'message': f"Node unreachable: {str(e)}",
-                            'level': 'error'
-                        }
-                        logs.append(json.dumps(log_entry))
-                        previous_state[url] = {'was_reachable': False}
-
-            # Send all log entries
-            for log in logs:
-                try:
-                    ws.send(log)
-                except Exception as e:
-                    logger.error(f"Failed to send Ollama log: {e}")
-                    raise
-
-            # Only send heartbeat every 30 seconds if idle (no logs)
-            if len(logs) == 0:
-                # Track last heartbeat time
-                if not hasattr(ws, '_last_heartbeat'):
-                    ws._last_heartbeat = 0
-
-                current_time = time.time()
-                if current_time - ws._last_heartbeat >= 30:  # 30 seconds
-                    heartbeat = {
-                        'timestamp': time.time(),
-                        'node': 'system',
-                        'type': 'debug',
-                        'message': f'✓ Monitoring {len(registry.nodes)} nodes (idle)',
-                        'level': 'info'
-                    }
-                    ws.send(json.dumps(heartbeat))
-                    ws._last_heartbeat = current_time
-
-            # Poll every 2 seconds
-            time.sleep(2)
-
-        except Exception as e:
-            logger.error(f"Ollama logs WebSocket error: {e}", exc_info=True)
-            # Send error to client
-            try:
-                error_msg = {
-                    'timestamp': time.time(),
-                    'node': 'system',
-                    'type': 'error',
-                    'message': f'Error: {str(e)}',
-                    'level': 'error'
-                }
-                ws.send(json.dumps(error_msg))
-            except:
-                pass
-            break
+    # Keep connection alive but don't poll
+    try:
+        while True:
+            time.sleep(60)  # Just keep connection alive, no polling
+    except Exception:
+        pass
 
 @sock.route('/ws/llama_cpp_logs')
 def ws_llama_cpp_logs(ws):
-    """WebSocket endpoint for streaming llama.cpp coordinator and RPC backend activity."""
+    """
+    WebSocket endpoint for streaming llama.cpp coordinator and RPC backend activity.
+
+    EVENT-DRIVEN: Only reports state changes, does not poll.
+    Uses Redis pub/sub for real-time events when available.
+    """
     logger.info("llama.cpp logs WebSocket client connected.")
 
     # Send initial connection message
@@ -480,6 +367,16 @@ def ws_llama_cpp_logs(ws):
                 logs.append(json.dumps(log_entry))
                 previous_state['coordinator_running'] = True
 
+                # Publish to Redis
+                if redis_publisher:
+                    redis_publisher.publish_log(
+                        component=ComponentType.COORDINATOR,
+                        level=LogLevel.INFO,
+                        message=f"llama.cpp coordinator started (port {port})",
+                        event_type="start",
+                        details={'model_path': model_path, 'port': port}
+                    )
+
             # Detect coordinator stop
             if not coordinator and previous_state['coordinator_running']:
                 log_entry = {
@@ -491,6 +388,10 @@ def ws_llama_cpp_logs(ws):
                 }
                 logs.append(json.dumps(log_entry))
                 previous_state['coordinator_running'] = False
+
+                # Publish to Redis
+                if redis_publisher:
+                    redis_publisher.publish_coordinator_stop()
 
             # Detect model loading in coordinator
             if coordinator_model != previous_state['coordinator_model']:
@@ -504,6 +405,13 @@ def ws_llama_cpp_logs(ws):
                         'details': {'model': coordinator_model}
                     }
                     logs.append(json.dumps(log_entry))
+
+                    # Publish to Redis
+                    if redis_publisher:
+                        redis_publisher.publish_model_load(
+                            model_name=coordinator_model,
+                            model_path=getattr(coordinator, 'model_path', 'unknown')
+                        )
                 previous_state['coordinator_model'] = coordinator_model
 
             # Monitor RPC backends
@@ -527,6 +435,10 @@ def ws_llama_cpp_logs(ws):
                         }
                         logs.append(json.dumps(log_entry))
 
+                        # Publish to Redis
+                        if redis_publisher:
+                            redis_publisher.publish_rpc_backend_connect(backend_addr)
+
                 # Detect removed RPC backends
                 removed_backends = previous_state['rpc_backends'] - current_backends
                 for backend_addr in removed_backends:
@@ -539,6 +451,10 @@ def ws_llama_cpp_logs(ws):
                         'details': {'backend': backend_addr}
                     }
                     logs.append(json.dumps(log_entry))
+
+                    # Publish to Redis
+                    if redis_publisher:
+                        redis_publisher.publish_rpc_backend_disconnect(backend_addr)
 
                 previous_state['rpc_backends'] = current_backends
 
@@ -588,8 +504,10 @@ def ws_llama_cpp_logs(ws):
                     ws.send(json.dumps(heartbeat))
                     previous_state['last_heartbeat'] = current_time
 
-            # Poll every 2 seconds
-            time.sleep(2)
+            # Check for state changes every 60 seconds (not aggressive polling)
+            # This only detects coordinator start/stop, not active operation
+            # For real-time logs, coordinator publishes to Redis pub/sub
+            time.sleep(60)
 
         except Exception as e:
             logger.error(f"llama.cpp logs WebSocket error: {e}", exc_info=True)
@@ -606,9 +524,9 @@ def ws_llama_cpp_logs(ws):
                 pass
             break
 
-def run_dashboard(host='0.0.0.0', port=8080, node_registry=None, sollol_lb=None, hybrid_router_ref=None, rpc_registry=None):
+def run_dashboard(host='0.0.0.0', port=8080, node_registry=None, sollol_lb=None, hybrid_router_ref=None, rpc_registry=None, redis_log_publisher=None):
     """Run the dashboard server."""
-    global registry, load_balancer, hybrid_router, rpc_backend_registry
+    global registry, load_balancer, hybrid_router, rpc_backend_registry, redis_publisher
 
     if node_registry is None:
         from node_registry import NodeRegistry
@@ -635,6 +553,16 @@ def run_dashboard(host='0.0.0.0', port=8080, node_registry=None, sollol_lb=None,
     if rpc_registry is not None:
         rpc_backend_registry = rpc_registry
         logger.info(f"🔗 RPC backend monitoring enabled ({len(rpc_registry.backends)} backends)")
+
+    # Set Redis publisher for log publishing
+    if redis_log_publisher is not None:
+        redis_publisher = redis_log_publisher
+        logger.info(f"📡 Redis log publishing enabled (host: {redis_publisher.host}:{redis_publisher.port})")
+    elif REDIS_AVAILABLE:
+        # Try to use global publisher
+        redis_publisher = get_global_publisher()
+        if redis_publisher:
+            logger.info("📡 Using global Redis log publisher")
 
     # Capture werkzeug logs and route them to the queue
     werkzeug_logger = logging.getLogger('werkzeug')

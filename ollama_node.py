@@ -137,21 +137,34 @@ class OllamaNode:
             True if probe successful
         """
         try:
-            # Try to get model info to infer GPU presence
-            response = requests.post(
-                f"{self.url}/api/show",
-                json={"name": "llama3.2"},  # Try a common model
+            # Check /api/ps for GPU usage (size_vram > 0 means GPU is available)
+            response = requests.get(
+                f"{self.url}/api/ps",
                 timeout=timeout
             )
 
             if response.status_code == 200:
                 data = response.json()
-                # Infer GPU from model details (this is heuristic)
-                model_params = data.get('parameters', '')
-                if 'gpu' in model_params.lower() or 'cuda' in model_params.lower():
-                    self.capabilities.has_gpu = True
+                models = data.get('models', [])
 
-            # For now, set defaults (could be extended with system APIs)
+                # Check if ANY loaded model is using VRAM (indicates GPU presence)
+                total_vram_mb = 0
+                for model in models:
+                    vram_bytes = model.get('size_vram', 0)
+                    if vram_bytes > 0:
+                        self.capabilities.has_gpu = True
+                        total_vram_mb += vram_bytes / (1024 * 1024)  # Convert to MB
+
+                if self.capabilities.has_gpu:
+                    self.capabilities.gpu_count = 1  # Assume single GPU for now
+                    # Store total VRAM usage (not ideal but better than nothing)
+                    # Ideally we'd get GPU memory capacity, but Ollama doesn't expose it
+                    self.capabilities.gpu_memory_mb = int(total_vram_mb)
+                    logger.debug(f"{self.name}: GPU detected ({self.capabilities.gpu_memory_mb}MB VRAM in use)")
+                else:
+                    logger.debug(f"{self.name}: No GPU detected (all models on CPU)")
+
+            # Set defaults
             self.capabilities.cpu_cores = 4  # Default assumption
             self.capabilities.total_memory_mb = 8192  # Default assumption
 
