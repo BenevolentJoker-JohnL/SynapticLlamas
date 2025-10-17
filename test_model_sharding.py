@@ -50,15 +50,21 @@ async def test_model_sharding():
     print("   ✅ HybridRouter initialized")
     print()
 
-    # Test model sharding with llama3.1:70b
-    model = "llama3.1:70b"
+    # Note: Using 13B model instead of 70B due to llama.cpp coordinator limitation.
+    # The coordinator must load the full model in RAM before distributing computation.
+    # For true distributed 70B+ support, see: https://github.com/BenevolentJoker-JohnL/SOLLOL#-future-work-fully-distributed-model-sharding-funding-contingent
+    model = "llama2:13b"
     print(f"🔬 Testing model sharding with: {model}")
     print()
     print("📝 What will happen:")
     print("   1. HybridRouter resolves GGUF file from Ollama storage")
     print("   2. Starts llama-server coordinator with --rpc flag")
-    print("   3. Coordinator automatically distributes model layers across RPC backends")
+    print("   3. Coordinator distributes model layers across RPC backends")
     print("   4. Makes inference request")
+    print()
+    print("⚠️  Coordinator Limitation: Must load full model in RAM")
+    print("   • 13B model works on 16GB+ RAM node")
+    print("   • 70B model requires 32GB+ RAM on coordinator node")
     print()
     print("⏳ Starting coordinator (this may take 1-2 minutes for model loading)...")
     print()

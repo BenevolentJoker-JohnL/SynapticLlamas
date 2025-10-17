@@ -44,7 +44,15 @@ def demo_distributed_model():
 
     print("AUTOMATIC GGUF EXTRACTION FROM OLLAMA!")
     print("No manual GGUF paths needed - just pull in Ollama:")
-    print("  $ ollama pull llama3.1:405b")
+    print("  $ ollama pull llama2:13b")
+    print()
+    print("⚠️  COORDINATOR LIMITATION:")
+    print("   llama.cpp's --rpc flag distributes COMPUTATION, not STORAGE.")
+    print("   The coordinator node must load the full model in RAM first.")
+    print("   • 13B model works on 16GB+ RAM node")
+    print("   • 70B model requires 32GB+ RAM on coordinator")
+    print("   For true distributed 70B+ support, see funding roadmap:")
+    print("   https://github.com/BenevolentJoker-JohnL/SOLLOL#-future-work-fully-distributed-model-sharding-funding-contingent")
     print()
 
     # Create client with distributed inference enabled
@@ -57,28 +65,28 @@ def demo_distributed_model():
         ]
     )
 
-    print("Making request with llama3.1:405b (405B model)...")
+    print("Making request with llama2:13b (13B model)...")
     print("SynapticLlamas will:")
     print("  1. Find GGUF in ~/.ollama/models/blobs/")
     print("  2. Start coordinator with that GGUF")
-    print("  3. Distribute across 2 RPC backends")
+    print("  3. Distribute COMPUTATION across 2 RPC backends")
     print()
 
     try:
         response = client.chat(
-            "llama3.1:405b",
+            "llama2:13b",
             "Explain quantum entanglement in one sentence"
         )
         print(f"Response: {response}")
         print()
-        print("✅ Large model routed to llama.cpp distributed cluster!")
+        print("✅ Model routed to llama.cpp distributed cluster!")
         print("   GGUF automatically extracted from Ollama storage!")
     except Exception as e:
         print(f"⚠️  Error (expected if setup incomplete): {e}")
         print()
         print("To run this demo:")
         print("1. Pull model in Ollama:")
-        print("   ollama pull llama3.1:405b")
+        print("   ollama pull llama2:13b")
         print("2. Start rpc-server on each worker node:")
         print("   Node 1: rpc-server --host 0.0.0.0 --port 50052 --mem 2048")
         print("   Node 2: rpc-server --host 0.0.0.0 --port 50052 --mem 2048")
@@ -106,8 +114,9 @@ def demo_automatic_routing():
     test_models = [
         ("llama3.2", "3B - Routes to Ollama"),
         ("llama2:7b", "7B - Routes to Ollama"),
-        ("llama2:70b", "70B - Routes to Ollama or llama.cpp"),
-        ("llama3.1:405b", "405B - Routes to llama.cpp distributed"),
+        ("llama2:13b", "13B - Routes to llama.cpp (works with coordinator limitation)"),
+        # Note: 70B+ requires coordinator node with 32GB+ RAM (architectural limitation)
+        # For true distributed 70B+ support, see funding roadmap
     ]
 
     print("Testing automatic routing for different model sizes:\n")
@@ -142,19 +151,14 @@ def demo_model_comparison():
             "note": "Limited to small/medium models"
         },
         {
-            "title": "2-Node Cluster (2x RTX 4090 24GB = 48GB total)",
-            "models": ["All small models", "llama2:70b", "llama3:70b", "mixtral:8x7b"],
-            "note": "Can run 70B models split across nodes"
+            "title": "2-Node Cluster with llama.cpp RPC (current implementation)",
+            "models": ["All small models", "llama2:13b with distributed computation"],
+            "note": "⚠️  Coordinator limitation: Must load full model in RAM. Works for 13B, needs 32GB+ RAM node for 70B"
         },
         {
-            "title": "4-Node Cluster (4x RTX 4090 24GB = 96GB total)",
-            "models": ["All models up to 70B", "mixtral:8x22b (141B)"],
-            "note": "Can run very large models"
-        },
-        {
-            "title": "6-Node Cluster (6x RTX 4090 24GB = 144GB total)",
-            "models": ["llama3.1:405b", "Any model you can imagine"],
-            "note": "🚀 Run the biggest models on consumer hardware!"
+            "title": "Future: Ray-based Pipeline Parallelism (funding contingent)",
+            "models": ["llama2:70b", "llama3.1:405b", "Any size model"],
+            "note": "🚀 True distributed storage + computation. See: https://github.com/BenevolentJoker-JohnL/SOLLOL#-future-work-fully-distributed-model-sharding-funding-contingent"
         }
     ]
 
