@@ -197,7 +197,7 @@ class DistributedOrchestrator:
             enable_ast_voting: Enable AST quality voting
             quality_threshold: Minimum quality score (0.0-1.0)
             max_quality_retries: Maximum quality re-refinement attempts
-            synthesis_model: Optional larger model for phase 4 synthesis (e.g., "llama2:13b")
+            synthesis_model: Optional larger model for phase 4 synthesis (e.g., "codellama:13b")
                            Note: 70B+ models require coordinator node with 32GB+ RAM due to llama.cpp limitation
 
         Returns:

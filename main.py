@@ -787,14 +787,14 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             # Note: Using 13B model instead of 70B due to llama.cpp coordinator limitation.
                             # The coordinator must load the full model in RAM before distributing computation.
                             # For true distributed 70B+ support, see: https://github.com/BenevolentJoker-JohnL/SOLLOL#-future-work-fully-distributed-model-sharding-funding-contingent
-                            current_model = "llama2:13b"  # Use 13B model for sharding demo
+                            current_model = "codellama:13b"  # Use 13B model for sharding demo
                             synthesis_model = None  # Same model for all phases in sharding-only mode
                             update_config(task_distribution_enabled=False, model_sharding_enabled=True,
-                                        model="llama2:13b", synthesis_model=None)
+                                        model="codellama:13b", synthesis_model=None)
                             global_orchestrator = None
                             print("✅ MODEL SHARDING MODE")
                             print(f"   Using {len(rpc_backends)} RPC backend(s)")
-                            print("   Model: llama2:13b (all phases, sharded via RPC)")
+                            print("   Model: codellama:13b (all phases, sharded via RPC)")
                             print("   ⚠️  Note: Coordinator needs full model in RAM (13B works, 70B requires 32GB+ RAM node)")
                             print("   Synthesis model: None")
                             print("   Models (up to 13B) split via llama.cpp")
@@ -811,15 +811,15 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             # Note: Using 13B model instead of 70B due to llama.cpp coordinator limitation.
                             # The coordinator must load the full model in RAM before distributing computation.
                             # For true distributed 70B+ support, see: https://github.com/BenevolentJoker-JohnL/SOLLOL#-future-work-fully-distributed-model-sharding-funding-contingent
-                            synthesis_model = "llama2:13b"  # 13B model for phase 4
+                            synthesis_model = "codellama:13b"  # 13B model for phase 4
                             update_config(task_distribution_enabled=True, model_sharding_enabled=True,
-                                        model="llama3.2", synthesis_model="llama2:13b")
+                                        model="llama3.2", synthesis_model="codellama:13b")
                             global_orchestrator = None
                             print("✅ HYBRID MODE (Task Distribution + Model Sharding)")
                             print(f"   Task distribution: {ollama_nodes_count} Ollama nodes")
                             print(f"   Model sharding: {len(rpc_backends)} RPC backends")
                             print(f"   Phases 1-3 model: llama3.2 → Ollama pool (parallel agents)")
-                            print(f"   Phase 4 synthesis: llama2:13b → RPC sharding")
+                            print(f"   Phase 4 synthesis: codellama:13b → RPC sharding")
                             print("   ⚠️  Note: Coordinator needs full model in RAM (13B works, 70B requires 32GB+ RAM node)")
                             print("   🔀 HybridRouter intelligently routes based on model size")
                             print("   💡 Use 'synthesis <model>' to change synthesis model\n")

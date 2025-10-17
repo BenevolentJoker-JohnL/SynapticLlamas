@@ -44,7 +44,7 @@ def demo_distributed_model():
 
     print("AUTOMATIC GGUF EXTRACTION FROM OLLAMA!")
     print("No manual GGUF paths needed - just pull in Ollama:")
-    print("  $ ollama pull llama2:13b")
+    print("  $ ollama pull codellama:13b")
     print()
     print("⚠️  COORDINATOR LIMITATION:")
     print("   llama.cpp's --rpc flag distributes COMPUTATION, not STORAGE.")
@@ -65,7 +65,7 @@ def demo_distributed_model():
         ]
     )
 
-    print("Making request with llama2:13b (13B model)...")
+    print("Making request with codellama:13b (13B model)...")
     print("SynapticLlamas will:")
     print("  1. Find GGUF in ~/.ollama/models/blobs/")
     print("  2. Start coordinator with that GGUF")
@@ -74,7 +74,7 @@ def demo_distributed_model():
 
     try:
         response = client.chat(
-            "llama2:13b",
+            "codellama:13b",
             "Explain quantum entanglement in one sentence"
         )
         print(f"Response: {response}")
@@ -86,7 +86,7 @@ def demo_distributed_model():
         print()
         print("To run this demo:")
         print("1. Pull model in Ollama:")
-        print("   ollama pull llama2:13b")
+        print("   ollama pull codellama:13b")
         print("2. Start rpc-server on each worker node:")
         print("   Node 1: rpc-server --host 0.0.0.0 --port 50052 --mem 2048")
         print("   Node 2: rpc-server --host 0.0.0.0 --port 50052 --mem 2048")
@@ -114,7 +114,7 @@ def demo_automatic_routing():
     test_models = [
         ("llama3.2", "3B - Routes to Ollama"),
         ("llama2:7b", "7B - Routes to Ollama"),
-        ("llama2:13b", "13B - Routes to llama.cpp (works with coordinator limitation)"),
+        ("codellama:13b", "13B - Routes to llama.cpp (works with coordinator limitation)"),
         # Note: 70B+ requires coordinator node with 32GB+ RAM (architectural limitation)
         # For true distributed 70B+ support, see funding roadmap
     ]
@@ -147,12 +147,12 @@ def demo_model_comparison():
     configs = [
         {
             "title": "Single Node (e.g., 1x RTX 4090 24GB)",
-            "models": ["llama3.2 (3B)", "llama2:7b", "llama2:13b", "llama3:8b"],
+            "models": ["llama3.2 (3B)", "llama2:7b", "codellama:13b", "llama3:8b"],
             "note": "Limited to small/medium models"
         },
         {
             "title": "2-Node Cluster with llama.cpp RPC (current implementation)",
-            "models": ["All small models", "llama2:13b with distributed computation"],
+            "models": ["All small models", "codellama:13b with distributed computation"],
             "note": "⚠️  Coordinator limitation: Must load full model in RAM. Works for 13B, needs 32GB+ RAM node for 70B"
         },
         {
