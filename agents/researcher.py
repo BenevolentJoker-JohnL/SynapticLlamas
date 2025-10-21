@@ -2,7 +2,7 @@ from .base_agent import BaseAgent
 
 
 class Researcher(BaseAgent):
-    def __init__(self, model="llama3.2", timeout=300):
+    def __init__(self, model="llama3.2", timeout=600):
         super().__init__("Researcher", model, timeout=timeout)
         # Define expected JSON schema for TrustCall validation
         self.expected_schema = {
@@ -54,11 +54,13 @@ class Researcher(BaseAgent):
                 "\n"
                 "CRITICAL RULES:\n"
                 "- context field = ONE STRING of complete, properly spaced sentences\n"
+                "- EVERY factual claim MUST have a citation [1][2] - NO EXCEPTIONS\n"
+                "- If you write a sentence without [1] or [2], it WILL BE REJECTED\n"
                 "- NO missing spaces between words (write 'at the' NOT 'the')\n"
                 "- NO sentence fragments (every sentence needs subject + verb)\n"
                 "- NO random topic jumps (maintain logical progression)\n"
                 "- NO broken math (write out equations properly)\n"
-                "- YES proper grammar, YES complete thoughts, YES logical flow"
+                "- YES proper grammar, YES complete thoughts, YES logical flow, YES citations on every claim"
             )
         else:
             # Standard prompt without citations - AGGRESSIVE version

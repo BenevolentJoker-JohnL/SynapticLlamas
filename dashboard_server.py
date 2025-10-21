@@ -9,12 +9,20 @@ import logging
 import queue
 import requests
 import time
+import threading
 from datetime import datetime
 from logging import Handler
 
 from flask import Flask, jsonify, send_file
 from flask_cors import CORS
 from flask_sock import Sock
+
+# Import Redis for pub/sub
+try:
+    import redis
+    REDIS_CLIENT_AVAILABLE = True
+except ImportError:
+    REDIS_CLIENT_AVAILABLE = False
 
 # Import Redis log publisher
 try:
@@ -322,6 +330,20 @@ def ws_llama_cpp_logs(ws):
         'last_heartbeat': 0
     }
 
+    # Set up Redis pub/sub for live coordinator logs (once)
+    pubsub = None
+    if REDIS_CLIENT_AVAILABLE and redis_publisher:
+        try:
+            redis_host = getattr(redis_publisher, 'host', 'localhost')
+            redis_port = getattr(redis_publisher, 'port', 6379)
+            r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+            pubsub = r.pubsub(ignore_subscribe_messages=True)
+            pubsub.subscribe('sollol:logs:llama_cpp')
+            logger.info("📡 Subscribed to sollol:logs:llama_cpp for live coordinator logs")
+        except Exception as e:
+            logger.warning(f"Could not subscribe to Redis channel: {e}")
+            pubsub = None
+
     while True:
         try:
             logs = []
@@ -504,10 +526,31 @@ def ws_llama_cpp_logs(ws):
                     ws.send(json.dumps(heartbeat))
                     previous_state['last_heartbeat'] = current_time
 
-            # Check for state changes every 60 seconds (not aggressive polling)
-            # This only detects coordinator start/stop, not active operation
-            # For real-time logs, coordinator publishes to Redis pub/sub
-            time.sleep(60)
+            # NEW: Check for live coordinator logs from Redis pub/sub
+            if pubsub:
+                try:
+                    # Listen for messages with short timeout for responsiveness
+                    message = pubsub.get_message(timeout=0.5)
+                    if message and message['type'] == 'message':
+                        log_line = message['data']
+                        log_msg = {
+                            'timestamp': time.time(),
+                            'component': 'coordinator',
+                            'type': 'log',
+                            'message': log_line,
+                            'level': 'debug'
+                        }
+                        ws.send(json.dumps(log_msg))
+                    else:
+                        # No message, check state changes less frequently
+                        time.sleep(2)
+                except Exception as redis_err:
+                    logger.debug(f"Redis message check failed: {redis_err}")
+                    time.sleep(2)
+            else:
+                # No Redis available, check for state changes every 60 seconds
+                # This only detects coordinator start/stop, not active operation
+                time.sleep(60)
 
         except Exception as e:
             logger.error(f"llama.cpp logs WebSocket error: {e}", exc_info=True)

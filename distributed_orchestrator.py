@@ -17,6 +17,7 @@ from content_detector import detect_content_type, get_continuation_prompt, Conte
 from flockparser_adapter import get_flockparser_adapter
 import logging
 import time
+import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ class DistributedOrchestrator:
 
     def __init__(self, registry: NodeRegistry = None, use_sollol: bool = True, use_flockparser: bool = False,
                  enable_distributed_inference: bool = False, rpc_backends: list = None,
-                 task_distribution_enabled: bool = True):
+                 task_distribution_enabled: bool = True, coordinator_url: str = None):
         """
         Initialize distributed orchestrator with SOLLOL.
 
@@ -47,6 +48,7 @@ class DistributedOrchestrator:
             enable_distributed_inference: Enable llama.cpp distributed inference (default: False)
             rpc_backends: List of RPC backend configs for distributed inference
             task_distribution_enabled: Enable Ollama task distribution (default: True)
+            coordinator_url: URL of llama.cpp coordinator (e.g., "http://127.0.0.1:18080")
         """
         self.registry = registry or NodeRegistry()
 
@@ -65,6 +67,7 @@ class DistributedOrchestrator:
         # Initialize HybridRouter for distributed inference with llama.cpp
         self.hybrid_router = None
         self.hybrid_router_sync = None
+        self.coordinator_manager = None
         self.enable_distributed_inference = enable_distributed_inference
         self.task_distribution_enabled = task_distribution_enabled
 
@@ -77,6 +80,9 @@ class DistributedOrchestrator:
                 from sollol.pool import OllamaPool
                 from hybrid_router_sync import HybridRouterSync
 
+                # Extract coordinator_url early (needed for RPC backend logic)
+                coordinator_url_for_check = coordinator_url  # Store for later use
+
                 # Auto-discover RPC backends if not provided or empty
                 if rpc_backends is None or len(rpc_backends) == 0:
                     logger.info("🔍 Auto-discovering RPC backends...")
@@ -88,12 +94,19 @@ class DistributedOrchestrator:
                         for backend in rpc_backends:
                             logger.info(f"   • {backend['host']}:{backend['port']}")
                     else:
-                        logger.info("ℹ️  No RPC backends discovered - Ray will be used for Ollama parallelization only")
-                        rpc_backends = []
+                        # If no backends discovered but coordinator_url is set, add dummy backend
+                        # This signals to RayHybridRouter that RPC routing is available
+                        if coordinator_url_for_check:
+                            rpc_backends = [{"host": "coordinator", "port": 0}]
+                            logger.info("ℹ️  No RPC backends discovered, but coordinator URL is set")
+                            logger.info(f"   Using coordinator-only mode (backends managed by coordinator)")
+                        else:
+                            logger.info("ℹ️  No RPC backends discovered - Ray will be used for Ollama parallelization only")
+                            rpc_backends = []
 
                 # Only create OllamaPool if task distribution is enabled
                 ollama_pool = None
-                if task_distribution_enabled:
+                if task_distribution_enabled and len(self.registry.nodes) > 0:
                     # Create OllamaPool from existing registry nodes
                     ollama_nodes = [{"host": node.url.replace("http://", "").split(":")[0],
                                     "port": node.url.split(":")[-1]}
@@ -104,13 +117,62 @@ class DistributedOrchestrator:
                         register_with_dashboard=False  # Don't register internal pool
                     )
                     logger.info(f"✅ Task distribution enabled: Ollama pool with {len(ollama_nodes)} nodes")
+                elif not task_distribution_enabled:
+                    logger.info("⏭️  Task distribution disabled: Ollama pool will NOT be created (RPC-only mode)")
                 else:
-                    logger.info("⏭️  Task distribution disabled: Using only RPC model sharding")
+                    logger.info("⏭️  Task distribution enabled but no Ollama nodes in registry")
+
+                # Extract coordinator host and port from coordinator_url
+                coordinator_host = None
+                coordinator_port = None
+                if coordinator_url:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(coordinator_url)
+                    coordinator_host = parsed.hostname or "127.0.0.1"
+                    coordinator_port = parsed.port or 18080
+                    logger.info(f"📍 Coordinator URL configured: {coordinator_host}:{coordinator_port}")
+
+                # Auto-start coordinator if model sharding is enabled
+                if enable_distributed_inference and coordinator_host:
+                    try:
+                        from sollol.coordinator_manager import CoordinatorManager, CoordinatorConfig
+                        import asyncio
+
+                        # Create coordinator config
+                        coord_config = CoordinatorConfig(
+                            host=coordinator_host,
+                            port=coordinator_port,
+                            rpc_backends=[f"{b['host']}:{b['port']}" for b in rpc_backends] if rpc_backends else None,
+                            auto_start=True  # Auto-start if not running
+                        )
+
+                        # Create coordinator manager
+                        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+                        self.coordinator_manager = CoordinatorManager(coord_config, redis_url=redis_url)
+
+                        # Ensure coordinator is running
+                        logger.info("🔍 Checking coordinator status...")
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        is_running = loop.run_until_complete(self.coordinator_manager.ensure_running())
+                        loop.close()
+
+                        if is_running:
+                            logger.info(f"✅ Coordinator ready at {coordinator_host}:{coordinator_port}")
+                        else:
+                            logger.warning(f"⚠️  Coordinator not available, will use existing instance or fail gracefully")
+
+                    except Exception as e:
+                        logger.warning(f"⚠️  Coordinator auto-start failed: {e}")
+                        logger.warning(f"   Will assume coordinator is already running at {coordinator_host}:{coordinator_port}")
 
                 # Create RayHybridRouter (uses Ray for parallel pool execution)
+                logger.info(f"🔧 Creating RayHybridRouter: ollama_pool={'✅ Yes' if ollama_pool else '❌ None'}, rpc_backends={len(rpc_backends) if rpc_backends else 0}, coordinator={coordinator_host}:{coordinator_port if coordinator_host else 'N/A'}")
                 self.hybrid_router = RayHybridRouter(
                     ollama_pool=ollama_pool,  # None if task distribution disabled
                     rpc_backends=rpc_backends,
+                    coordinator_host=coordinator_host,
+                    coordinator_base_port=coordinator_port,
                     enable_distributed=True,
                 )
 
@@ -1002,18 +1064,50 @@ class DistributedOrchestrator:
                 enhanced_query = query
 
         # Check if we should use parallel generation
+        # Use SOLLOL's intelligent locality detection
         healthy_nodes = self.registry.get_healthy_nodes()
-        use_parallel = len(healthy_nodes) >= 2 and chunks_needed > 1
+        use_parallel = False
+
+        # Try to use existing SOLLOL OllamaPool from hybrid_router
+        ollama_pool = None
+        if hasattr(self, 'hybrid_router') and self.hybrid_router:
+            ollama_pool = getattr(self.hybrid_router, 'ollama_pool', None)
+
+        # If no pool available, create temporary one for locality detection
+        if not ollama_pool and len(healthy_nodes) > 0:
+            from sollol.pool import OllamaPool
+            ollama_nodes = [
+                {"host": node.url.split('://')[1].split(':')[0],
+                 "port": node.url.split(':')[-1]}
+                for node in healthy_nodes
+            ]
+            ollama_pool = OllamaPool(nodes=ollama_nodes, register_with_dashboard=False)
+
+        # Use SOLLOL's intelligent parallel decision
+        if ollama_pool:
+            use_parallel = ollama_pool.should_use_parallel_execution(chunks_needed)
+            unique_hosts = ollama_pool.count_unique_physical_hosts()
+            logger.info(
+                f"🔍 SOLLOL locality analysis: {unique_hosts} physical machine(s), "
+                f"{len(healthy_nodes)} node(s), parallel={use_parallel}"
+            )
+        else:
+            # Ultra-fallback: no nodes available
+            use_parallel = False
+            logger.warning("⚠️  No healthy nodes available")
+
+        # Pass RAG flag to enable citation validation
+        require_citations = len(source_documents) > 0
 
         if use_parallel:
             logger.info(f"⚡ PARALLEL MULTI-TURN MODE: {len(healthy_nodes)} nodes available\n")
             result = self._run_longform_parallel(
-                enhanced_query, content_type, chunks_needed, model, original_query=query
+                enhanced_query, content_type, chunks_needed, model, original_query=query, require_citations=require_citations
             )
         else:
             logger.info(f"📝 SEQUENTIAL MULTI-TURN MODE (insufficient nodes)\n")
             result = self._run_longform_sequential(
-                enhanced_query, content_type, chunks_needed, model, original_query=query
+                enhanced_query, content_type, chunks_needed, model, original_query=query, require_citations=require_citations
             )
 
         # Add RAG metadata to result AND append citations to final output
@@ -1082,6 +1176,170 @@ class DistributedOrchestrator:
         # Return only the areas we need for this total_chunks count
         return {k: v for k, v in areas.items() if k <= total_chunks}
 
+    def _clean_latex_and_unicode(self, text: str) -> str:
+        """Clean up broken LaTeX and Unicode artifacts from PDF extraction."""
+        if not text or not isinstance(text, str):
+            return text
+
+        import re
+        import unicodedata
+
+        # Fix common broken LaTeX patterns (backslashes stripped)
+        latex_fixes = [
+            # Common broken math functions
+            (r'\begin\{', r'\\begin{'),
+            (r'\bend\{', r'\\end{'),
+            (r'\\end\{pmatrix\}(\s*),', r'\\end{pmatrix},'),  # Fix trailing comma after matrix
+            (r'\bfrac\{', r'\\frac{'),
+            (r'\bsqrt\{', r'\\sqrt{'),
+            (r'\bsum\b', r'\\sum'),
+            (r'\bint\b', r'\\int'),
+            (r'\blim\b', r'\\lim'),
+            (r'\balpha\b', r'\\alpha'),
+            (r'\bbeta\b', r'\\beta'),
+            (r'\bgamma\b', r'\\gamma'),
+            (r'\bdelta\b', r'\\delta'),
+            (r'\btheta\b', r'\\theta'),
+            (r'\bphi\b', r'\\phi'),
+            (r'\bpsi\b', r'\\psi'),
+            (r'\bho\b', r'\\rho'),  # Fix "\ho"
+
+            # Common arrows and operators (broken)
+            (r'\brightarrow\b', r'\\rightarrow'),
+            (r'\bleftarrow\b', r'\\leftarrow'),
+            (r'\bRightarrow\b', r'\\Rightarrow'),
+            (r'\bLeftarrow\b', r'\\Leftarrow'),
+            (r'\brightleftharpoons\b', r'\\rightleftharpoons'),
+            (r'\binfty\b', r'\\infty'),
+            (r'\bpartial\b', r'\\partial'),
+            (r'\bnabla\b', r'\\nabla'),
+            (r'\bcdot\b', r'\\cdot'),
+            (r'\btimes\b', r'\\times'),
+
+            # Text mode escaping
+            (r'\bext\{', r'\\text{'),
+
+            # Trace function
+            (r'\bTr\b', r'\\text{Tr}'),
+            (r'\bext{Tr}\b', r'\\text{Tr}'),
+        ]
+
+        original_text = text
+        for pattern, replacement in latex_fixes:
+            text = re.sub(pattern, replacement, text)
+
+        # Remove corrupted Unicode combining marks (accents on wrong characters)
+        # These appear as ά, ǹ, etc. from PDF corruption
+        text = re.sub(r'[\u0300-\u036f]+', '', text)  # Remove combining diacritical marks
+
+        # Normalize remaining Unicode
+        text = unicodedata.normalize('NFKC', text)
+
+        # Remove PDF artifacts and control characters (but preserve spaces!)
+        text = re.sub(r'\\x[0-9a-fA-F]{2}', '', text)  # Remove \x1e, \x08, etc.
+        # Only remove non-space control chars (preserve \n, \t, space)
+        text = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f-\x9f]', '', text)
+
+        # Clean up excessive whitespace (but don't remove ALL spaces!)
+        text = re.sub(r'\n{3,}', '\n\n', text)  # Max 2 newlines
+        text = re.sub(r'  +', ' ', text)  # Multiple spaces to single
+        text = re.sub(r' ([,.])', r'\1', text)  # Remove space before punctuation
+
+        # Log if significant cleanup occurred
+        if len(text) != len(original_text):
+            chars_changed = len(original_text) - len(text)
+            logger.debug(f"🧹 LaTeX cleanup: removed {chars_changed} corrupted characters")
+
+        return text
+
+    def _validate_text_quality(self, text: str, chunk_name: str = "", require_citations: bool = False) -> tuple[bool, str]:
+        """
+        Validate text quality by detecting common grammar issues.
+
+        Args:
+            text: The text to validate
+            chunk_name: Name of chunk for logging
+            require_citations: If True, text must contain citation markers like [1][2]
+
+        Returns: (is_valid, error_message)
+        """
+        if not text or len(text) < 100:
+            return False, "Text too short"
+
+        import re
+
+        # Check for citations if required (RAG mode)
+        if require_citations:
+            citations = re.findall(r'\[\d+\]', text)
+            if len(citations) == 0:
+                logger.error(f"❌ QUALITY FAILURE in {chunk_name}: No citations found (RAG mode requires [1][2] markers)")
+                logger.error(f"   Text sample: {text[:300]}...")
+                return False, "No citations found (required for RAG)"
+            elif len(citations) < 3:
+                logger.warning(f"⚠️ Quality issue in {chunk_name}: Very few citations ({len(citations)} found, expected 10+)")
+            else:
+                logger.info(f"   ✓ Citations present: {len(citations)} markers found")
+
+        # Count sentences (rough estimate)
+        sentences = re.split(r'[.!?]+\s+', text)
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+
+        if len(sentences) < 5:
+            return False, f"Too few sentences ({len(sentences)})"
+
+        # Check for common patterns of missing articles/prepositions
+        # These patterns indicate the model is skipping words
+        bad_patterns = [
+            (r'\bthe\s+the\b', "Repeated 'the'"),
+            (r'\b(is|are|was|were|be)\s+(is|are|was|were|be)\b', "Repeated verb"),
+            (r'\b(theory|concept|principle|system|process)\s+(based|rooted|related|described)\s+(the|a|an)\b', "Missing preposition (should be 'based ON the', 'related TO the')"),
+            (r'\b(describes?|explains?|shows?|demonstrates?)\s+(behavior|properties|characteristics)\s+(particles?|systems?|objects?)\b', "Missing 'of' (should be 'behavior OF particles')"),
+            (r'\b(at|in|on|of)\s+(the|a|an)\s+(at|in|on|of)\b', "Repeated preposition"),
+        ]
+
+        for pattern, description in bad_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                logger.warning(f"⚠️ Quality issue in {chunk_name}: {description} (found {len(matches)} instances)")
+                # Don't immediately reject, just warn
+
+        # More aggressive check: count articles and prepositions
+        # Good English text should have roughly 1 article per 10-15 words
+        words = text.split()
+        articles = len(re.findall(r'\b(the|a|an)\b', text, re.IGNORECASE))
+        prepositions = len(re.findall(r'\b(of|in|on|at|to|for|with|by|from|about)\b', text, re.IGNORECASE))
+
+        article_ratio = articles / len(words) if words else 0
+        preposition_ratio = prepositions / len(words) if words else 0
+
+        # Expected ratios for good English:
+        # Articles: 0.05-0.12 (5-12%)
+        # Prepositions: 0.08-0.15 (8-15%)
+
+        if article_ratio < 0.05:  # Less than 5% articles is suspicious (STRICTER)
+            logger.error(f"❌ QUALITY FAILURE in {chunk_name}: Too few articles ({article_ratio:.1%}, expected ≥5%)")
+            logger.error(f"   Text sample: {text[:200]}...")
+            return False, f"Too few articles ({article_ratio:.1%})"
+
+        if preposition_ratio < 0.06:  # Less than 6% prepositions is suspicious (STRICTER)
+            logger.error(f"❌ QUALITY FAILURE in {chunk_name}: Too few prepositions ({preposition_ratio:.1%}, expected ≥6%)")
+            logger.error(f"   Text sample: {text[:200]}...")
+            return False, f"Too few prepositions ({preposition_ratio:.1%})"
+
+        # Check for excessive repetition (same word repeated many times)
+        from collections import Counter
+        word_counts = Counter(w.lower() for w in words if len(w) > 3)
+        most_common_word, max_count = word_counts.most_common(1)[0] if word_counts else ("", 0)
+        repetition_ratio = max_count / len(words) if words else 0
+
+        if repetition_ratio > 0.05:  # More than 5% same word
+            logger.warning(f"⚠️ High repetition in {chunk_name}: '{most_common_word}' appears {max_count} times ({repetition_ratio:.1%})")
+
+        logger.info(f"✅ Quality validation passed for {chunk_name}")
+        logger.info(f"   Articles: {article_ratio:.1%}, Prepositions: {preposition_ratio:.1%}")
+
+        return True, "OK"
+
     def _extract_narrative_from_json(self, content):
         """Extract narrative text from JSON response, filtering out metadata."""
         if content is None:
@@ -1098,9 +1356,9 @@ class DistributedOrchestrator:
                     logger.debug(f"_extract_narrative_from_json: Parsed string as JSON dict with keys: {list(parsed.keys())}")
                     return self._extract_narrative_from_json(parsed)
             except:
-                # Not JSON, return as-is
+                # Not JSON, clean and return as-is
                 logger.debug(f"_extract_narrative_from_json: Returning string as-is (not JSON, length: {len(content)})")
-                return content
+                return self._clean_latex_and_unicode(content)
 
         if isinstance(content, dict):
             logger.debug(f"_extract_narrative_from_json: Processing dict with keys: {list(content.keys())}")
@@ -1137,7 +1395,7 @@ class DistributedOrchestrator:
                     # Recursively extract if it's a dict or JSON string
                     if isinstance(extracted, (dict, str)):
                         return self._extract_narrative_from_json(extracted)
-                    return str(extracted)
+                    return self._clean_latex_and_unicode(str(extracted))
 
             # THIRD: If no known keys found, try to extract ANY string value
             # This handles cases where the JSON uses custom keys like {"The Thread of Time": "story content"}
@@ -1146,13 +1404,13 @@ class DistributedOrchestrator:
                 if isinstance(value, str) and len(value) > 50:  # Narrative content is usually >50 chars
                     if not key.startswith('_') and not key.islower():  # Skip metadata-like keys
                         logger.debug(f"_extract_narrative_from_json: Found long string value for key '{key}'")
-                        return str(value)
+                        return self._clean_latex_and_unicode(str(value))
 
             # FOURTH: If still no content found, try ANY string value regardless of length
             for key, value in content.items():
                 if isinstance(value, str) and value.strip():
                     logger.debug(f"_extract_narrative_from_json: Found any string value for key '{key}'")
-                    return str(value)
+                    return self._clean_latex_and_unicode(str(value))
 
             # Last resort: log warning
             logger.warning(f"❌ No narrative content found in JSON response. Keys present: {list(content.keys())}")
@@ -1160,7 +1418,7 @@ class DistributedOrchestrator:
             return ""
 
         logger.debug(f"_extract_narrative_from_json: Returning str(content) - type: {type(content)}")
-        return str(content) if content else ""
+        return self._clean_latex_and_unicode(str(content)) if content else ""
 
     def _run_longform_parallel(
         self,
@@ -1168,7 +1426,8 @@ class DistributedOrchestrator:
         content_type: ContentType,
         chunks_needed: int,
         model: str,
-        original_query: str = None
+        original_query: str = None,
+        require_citations: bool = False
     ) -> dict:
         """
         Generate long-form content with parallel chunk generation.
@@ -1213,13 +1472,19 @@ Respond with JSON containing a 'story' field with your narrative."""
             chunk1_focus = focus_areas.get(1, "fundamental concepts")
             initial_prompt = f"""Research topic: {query_for_initial}
 
-Part 1 of {chunks_needed}. Write 500-600 words focused EXCLUSIVELY on: {chunk1_focus}
+Part 1 of {chunks_needed}. Write a MINIMUM of 600-800 words focused EXCLUSIVELY on: {chunk1_focus}
 
-CRITICAL REQUIREMENTS:
+CRITICAL LENGTH REQUIREMENT:
+- MINIMUM 600 words (approximately 3500-4500 characters)
+- If your response is shorter than 3000 characters, it will be REJECTED
+- Write in depth with extensive detail, examples, and explanations
+
+CRITICAL CONTENT REQUIREMENTS:
 - Cover ONLY {chunk1_focus} - DO NOT discuss other aspects
 - Include technical details, equations, data where relevant
 - Provide specific examples with numbers and data
 - Be technical and specific, not vague or general
+- Explain concepts thoroughly with multiple paragraphs per concept
 - This is Part 1 of {chunks_needed}, so other parts will cover different aspects
 
 IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown, no code blocks):
@@ -1229,18 +1494,18 @@ IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown,
             task_id="Initial_Content",
             payload={'prompt': initial_prompt, 'model': model},
             priority=8,  # High priority for initial chunk
-            timeout=600  # 10 minutes for chunks (CPU can be slow)
+            timeout=600  # 10 minutes for chunks (CPU can be slow, esp. with parallel load)
         )
 
         def execute_chunk(task: DistributedTask, node_url: str):
             # Use Storyteller for creative content, Researcher for analytical
             if content_type == ContentType.STORYTELLING:
-                agent = Storyteller(model=model, timeout=600)  # 10 min for CPU
+                agent = Storyteller(model=model, timeout=600)  # 10 min for chunks (CPU parallel load)
                 agent._hybrid_router_sync = self.hybrid_router_sync
                 agent._load_balancer = None
                 return agent.process(task.payload['prompt'])
             else:
-                agent = Researcher(model=model, timeout=600)  # 10 min for CPU
+                agent = Researcher(model=model, timeout=600)  # 10 min for chunks (CPU parallel load)
                 # Override schema for long-form chunks (simpler than full research schema)
                 agent.expected_schema = {"context": str}
 
@@ -1366,13 +1631,25 @@ IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown,
                 merge_strategy="collect"
             )
 
-            # Add all continuation chunks
+            # Add all continuation chunks with quality validation
             for i, chunk_content in enumerate(continuation_result.merged_result, start=2):
-                all_chunks.append({
+                chunk_dict = {
                     'chunk_num': i,
                     'content': chunk_content,
                     'duration_ms': continuation_result.individual_results[i-2].duration_ms
-                })
+                }
+
+                # Validate chunk quality
+                chunk_text = self._extract_narrative_from_json(chunk_content)
+                is_valid, error_msg = self._validate_text_quality(chunk_text, f"Chunk {i}", require_citations=require_citations)
+
+                if not is_valid:
+                    logger.error(f"   ❌ Chunk {i} FAILED quality validation: {error_msg}")
+                    logger.warning(f"   ⚠️  Chunk {i} will be excluded (parallel chunks not retried)")
+                    chunk_dict['failed'] = True
+                    chunk_dict['content'] = {"error": f"Quality validation failed: {error_msg}"}
+
+                all_chunks.append(chunk_dict)
 
             logger.info(
                 f"   ✅ All chunks completed in parallel "
@@ -1405,6 +1682,11 @@ IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown,
             # Just concatenate chunks directly - filter out failed chunks
             valid_chunks = []
             for chunk in all_chunks:
+                # Skip chunks marked as failed by quality validation
+                if chunk.get('failed', False):
+                    logger.warning(f"   ⚠️  Chunk {chunk['chunk_num']} failed quality validation - skipping")
+                    continue
+
                 narrative = self._extract_narrative_from_json(chunk['content'])
                 # Filter out empty, "str", "None", or very short garbage
                 if narrative and narrative not in ["str", "dict", "list", "None"] and len(narrative) > 50:
@@ -1474,13 +1756,17 @@ IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown,
 
 {combined_content}
 
-CRITICAL SYNTHESIS REQUIREMENTS:
-- PRESERVE ALL CONTENT - Do NOT condense, summarize, or remove information
-- Each part contains unique information that MUST be included in full
-- Your job is to ORGANIZE and SMOOTH TRANSITIONS, not to reduce length
-- Remove ONLY duplicate phrasing, never substantive content
-- The output should be LONGER or equal length to the input (currently {total_chars} chars)
-- Maintain all technical details, equations, examples, data, and explanations
+CRITICAL SYNTHESIS REQUIREMENTS - READ CAREFULLY:
+- PRESERVE ALL CONTENT - Do NOT condense, summarize, or remove ANY information
+- Your ONLY job is to ORGANIZE and SMOOTH TRANSITIONS between sections
+- DO NOT reduce length - output must be EQUAL OR LONGER than input
+- INPUT LENGTH: {total_chars} characters
+- OUTPUT LENGTH REQUIREMENT: MINIMUM {total_chars} characters (or your response is INVALID)
+- If your output is shorter than {total_chars} chars, you have FAILED the task
+- Each part contains unique information that MUST be included VERBATIM
+- Remove ONLY duplicate phrasing (same sentence repeated), never substantive content
+- Maintain ALL technical details, equations, examples, data, and explanations
+- Expand explanations where needed to improve clarity
 - Create logical flow between sections while keeping ALL information
 
 **CRITICAL CITATION PRESERVATION**:
@@ -1500,7 +1786,7 @@ IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown,
                 'model': model
             },
             priority=9,
-            timeout=1200  # 20 minutes for synthesis
+            timeout=1200  # 20 minutes for synthesis (needs time for quality)
         )
 
         def execute_synthesis(task: DistributedTask, node_url: str):
@@ -1553,6 +1839,16 @@ IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown,
             logger.error(f"❌ Extraction FAILED - got: {type(final_content)} with value: {repr(final_content)[:200]}")
             logger.error(f"   This will cause raw API response to display!")
 
+        # CRITICAL: Check if synthesis compressed content (major quality issue)
+        compression_ratio = len(final_content) / total_chars if total_chars > 0 else 0
+        if compression_ratio < 0.8:  # Lost >20% of content
+            logger.error(f"❌ SYNTHESIS COMPRESSION DETECTED!")
+            logger.error(f"   Input: {total_chars} chars | Output: {len(final_content)} chars")
+            logger.error(f"   Compression ratio: {compression_ratio:.1%} (FAILED - should be ≥100%)")
+            logger.error(f"   The model IGNORED instructions to preserve all content!")
+            logger.warning(f"   Falling back to direct concatenation (no synthesis)")
+            final_content = ""  # Force fallback
+
         # Check if synthesis produced unusable content (meta-messages, errors, or empty)
         is_unusable = (
             not final_content or
@@ -1571,6 +1867,11 @@ IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown,
             # Filter out failed chunks
             valid_chunks = []
             for chunk in all_chunks:
+                # Skip chunks marked as failed by quality validation
+                if chunk.get('failed', False):
+                    logger.warning(f"   ⚠️  Chunk {chunk['chunk_num']} failed quality validation - skipping")
+                    continue
+
                 narrative = self._extract_narrative_from_json(chunk['content'])
                 if narrative and narrative not in ["str", "dict", "list", "None"] and len(narrative) > 50:
                     valid_chunks.append(narrative)
@@ -1619,7 +1920,8 @@ IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown,
         content_type: ContentType,
         chunks_needed: int,
         model: str,
-        original_query: str = None
+        original_query: str = None,
+        require_citations: bool = False
     ) -> dict:
         """
         Generate long-form content sequentially (fallback for single node).
@@ -1773,8 +2075,57 @@ IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown,
 
             # Extract narrative for accumulation
             chunk_text = self._extract_narrative_from_json(chunk_content)
-            accumulated_content += f"\n\n{chunk_text}"
-            logger.info(f"   ✅ Chunk {chunk_num} complete ({chunk_duration:.0f}ms)\n")
+
+            # Validate text quality
+            is_valid, error_msg = self._validate_text_quality(chunk_text, f"Chunk {chunk_num}", require_citations=require_citations)
+            if not is_valid:
+                logger.error(f"   ❌ Chunk {chunk_num} FAILED quality validation: {error_msg}")
+                logger.warning(f"   🔄 Retrying chunk {chunk_num} with enhanced grammar prompt...")
+
+                # RETRY with enhanced prompt emphasizing proper grammar
+                enhanced_prompt = f"""CRITICAL GRAMMAR REQUIREMENTS:
+- Write COMPLETE sentences with subject + verb + object
+- Use proper articles: "the", "a", "an"
+- Use proper prepositions: "of", "in", "on", "at", "to", "for"
+- Example BAD: "theory based principles quantum mechanics"
+- Example GOOD: "the theory is based on the principles of quantum mechanics"
+
+{prompt}
+
+REMEMBER: Every sentence must be grammatically complete with all necessary words!"""
+
+                try:
+                    retry_start = time.time()
+                    if chunk_num == 1:
+                        retry_content = agent.process(enhanced_prompt)
+                    else:
+                        retry_content = agent.call_ollama(enhanced_prompt, system_prompt=system_prompt, use_trustcall=True)
+                    retry_duration = (time.time() - retry_start) * 1000
+
+                    # Validate retry result
+                    retry_text = self._extract_narrative_from_json(retry_content)
+                    retry_valid, retry_error = self._validate_text_quality(retry_text, f"Chunk {chunk_num} (retry)", require_citations=require_citations)
+
+                    if retry_valid:
+                        logger.info(f"   ✅ Retry SUCCESS: Chunk {chunk_num} now has good quality ({retry_duration:.0f}ms)")
+                        # Replace with retry result
+                        all_chunks[-1]['content'] = retry_content
+                        all_chunks[-1]['duration_ms'] = chunk_duration + retry_duration
+                        chunk_text = retry_text
+                    else:
+                        logger.error(f"   ❌ Retry FAILED: Chunk {chunk_num} still has poor quality: {retry_error}")
+                        logger.error(f"   Marking chunk as failed - will be excluded from output")
+                        all_chunks[-1]['content'] = {"error": f"Quality validation failed after retry: {retry_error}"}
+                        all_chunks[-1]['failed'] = True
+
+                except Exception as retry_err:
+                    logger.error(f"   ❌ Retry EXCEPTION: {retry_err}")
+                    all_chunks[-1]['content'] = {"error": f"Retry failed: {retry_err}"}
+                    all_chunks[-1]['failed'] = True
+
+            if not all_chunks[-1].get('failed', False):
+                accumulated_content += f"\n\n{chunk_text}"
+                logger.info(f"   ✅ Chunk {chunk_num} complete ({chunk_duration:.0f}ms)\n")
 
         # Synthesize
         logger.info(f"🔗 Synthesizing final output (this may take longer for comprehensive synthesis)")
@@ -1818,6 +2169,10 @@ IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown,
         # Extract and validate final content
         extracted_final_content = self._extract_narrative_from_json(final_content)
 
+        # Calculate total input chars for compression detection
+        total_input_chars = sum(len(self._extract_narrative_from_json(chunk['content']))
+                                for chunk in all_chunks if not chunk.get('failed', False))
+
         # Check if synthesis produced unusable content (meta-messages, errors, or empty)
         is_unusable = (
             not extracted_final_content or
@@ -1829,13 +2184,27 @@ IMPORTANT: You MUST respond with valid JSON in exactly this format (no markdown,
             "must respond" in extracted_final_content.lower()
         )
 
+        # CRITICAL: Check if synthesis compressed content (major quality issue)
+        compression_ratio = len(extracted_final_content) / total_input_chars if total_input_chars > 0 else 0
+        if compression_ratio < 0.8 and not is_unusable:  # Lost >20% of content
+            logger.error(f"❌ SYNTHESIS COMPRESSION DETECTED!")
+            logger.error(f"   Input: {total_input_chars} chars | Output: {len(extracted_final_content)} chars")
+            logger.error(f"   Compression ratio: {compression_ratio:.1%} (FAILED - should be ≥100%)")
+            logger.error(f"   The model IGNORED instructions to preserve all content!")
+            logger.warning(f"   Falling back to direct concatenation (no synthesis)")
+            is_unusable = True  # Force fallback to concatenation
+
         if is_unusable:
             # Fallback: just concatenate the chunks without synthesis
             logger.warning(f"Synthesis produced unusable result (len={len(extracted_final_content) if extracted_final_content else 0}), using direct concatenation")
-            extracted_final_content = "\n\n".join([
+            # Filter out failed chunks
+            valid_chunks = [
                 self._extract_narrative_from_json(chunk['content'])
                 for chunk in all_chunks
-            ])
+                if not chunk.get('failed', False)
+            ]
+            extracted_final_content = "\n\n".join(valid_chunks)
+            logger.info(f"   ✅ Concatenated {len(valid_chunks)} chunks ({len(extracted_final_content)} chars total)")
 
         # Clean chunks by extracting narratives (remove JSON metadata)
         cleaned_chunks = [

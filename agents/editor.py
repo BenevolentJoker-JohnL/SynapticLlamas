@@ -2,7 +2,7 @@ from .base_agent import BaseAgent
 
 
 class Editor(BaseAgent):
-    def __init__(self, model="llama3.2", timeout=300):
+    def __init__(self, model="llama3.2", timeout=1200):
         super().__init__("Editor", model, timeout=timeout)
         # Define expected JSON schema for TrustCall validation
         self.expected_schema = {

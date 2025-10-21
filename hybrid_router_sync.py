@@ -60,7 +60,8 @@ class HybridRouterSync:
         )
 
         # Block until result is ready (with timeout from kwargs if provided)
-        timeout = kwargs.get('timeout', 300)
+        # Default 1200s (20 min) to allow for slow distributed model loading
+        timeout = kwargs.get('timeout', 1200)
         try:
             result = future.result(timeout=timeout)
             return result

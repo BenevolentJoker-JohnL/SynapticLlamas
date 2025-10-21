@@ -9,8 +9,15 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from sollol_backup_20251005.hybrid_router import HybridRouter
-from sollol_backup_20251005.llama_cpp_coordinator import RPCBackend
+# Add SOLLOL to path
+import sys
+from pathlib import Path
+sollol_path = Path.home() / "SOLLOL" / "src"
+if sollol_path.exists():
+    sys.path.insert(0, str(sollol_path))
+
+from sollol.hybrid_router import HybridRouter
+from sollol.llama_cpp_coordinator import RPCBackend
 from sollol.pool import OllamaPool
 import logging
 

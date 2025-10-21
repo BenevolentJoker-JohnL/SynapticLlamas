@@ -549,7 +549,7 @@ def check_citation_compliance(prompt: str, validated_json: dict, agent_name: str
 
 
 class BaseAgent(ABC):
-    def __init__(self, name, model="llama3.2", ollama_url=None, timeout=300, priority=5):
+    def __init__(self, name, model="llama3.2", ollama_url=None, timeout=1800, priority=5):
         self.name = name
         self.model = model
 
@@ -564,7 +564,7 @@ class BaseAgent(ABC):
 
         self.ollama_url = ollama_url
         self.execution_time = 0
-        self.timeout = timeout  # Default 5 minutes for CPU inference
+        self.timeout = timeout  # Default 30 minutes for RPC sharding (distributed inference is slower)
         self.expected_schema = {}  # Subclasses can define expected JSON schema
 
     def call_ollama(self, prompt, system_prompt=None, force_json=True, use_trustcall=True):
@@ -696,6 +696,45 @@ class BaseAgent(ABC):
                         "format": "json" if force_json else "text",
                         "data": standardize_to_json(self.name, raw_output) if force_json else raw_output
                     }
+            except TimeoutError as timeout_err:
+                # RETRY LOGIC for HybridRouter timeout
+                logger.error(f"⏱️ HybridRouter TIMEOUT for {self.name} after {self.timeout}s")
+                logger.warning(f"🔄 Retrying {self.name} via HybridRouter with extended timeout ({self.timeout * 2}s)...")
+
+                try:
+                    retry_response = self._hybrid_router_sync.route_request(
+                        model=self.model,
+                        messages=messages,
+                        stream=False,
+                        timeout=self.timeout * 2  # Double the timeout for retry
+                    )
+                    logger.info(f"✅ RETRY SUCCESS: {self.name} completed via HybridRouter on retry")
+
+                    # Process retry response (same as successful response)
+                    if isinstance(retry_response, dict):
+                        if 'message' in retry_response:
+                            raw_output = retry_response['message'].get('content', '')
+                        elif 'response' in retry_response:
+                            raw_output = retry_response['response']
+                        elif 'content' in retry_response:
+                            raw_output = retry_response['content']
+                        else:
+                            raw_output = str(retry_response)
+                    else:
+                        raw_output = str(retry_response)
+
+                    # Return successful retry result
+                    return {
+                        "agent": self.name,
+                        "status": "success",
+                        "format": "json" if force_json else "text",
+                        "data": standardize_to_json(self.name, raw_output) if force_json else raw_output
+                    }
+
+                except Exception as retry_err:
+                    logger.error(f"❌ RETRY FAILED: {self.name} HybridRouter retry failed: {retry_err}")
+                    # Fall through to regular Ollama call
+
             except Exception as e:
                 logger.error(f"❌ HybridRouter failed for {self.name}: {e}")
                 import traceback
@@ -712,8 +751,14 @@ class BaseAgent(ABC):
             }
         }
 
-        if force_json:
+        # Models that don't support the format parameter
+        unsupported_format_models = ["codellama", "code-llama", "llama2", "mistral"]
+        model_supports_format = not any(unsupported in self.model.lower() for unsupported in unsupported_format_models)
+
+        if force_json and model_supports_format:
             payload["format"] = "json"
+        elif force_json and not model_supports_format:
+            logger.debug(f"{self.name}: Model {self.model} does not support format parameter, relying on prompt engineering")
 
         if system_prompt:
             payload["system"] = system_prompt
@@ -865,13 +910,31 @@ class BaseAgent(ABC):
                     error=f"Timeout after {elapsed:.2f}s"
                 )
 
-            self.execution_time = elapsed
-            return {
-                "agent": self.name,
-                "status": "error",
-                "format": "text",
-                "data": {"error": f"Request timed out after {elapsed:.2f}s"}
-            }
+            # RETRY LOGIC: Try one more time with extended timeout
+            logger.warning(f"🔄 Retrying {self.name} request with extended timeout ({self.timeout * 2}s)...")
+            try:
+                retry_response = requests.post(url, json=payload, timeout=self.timeout * 2)
+                retry_elapsed = time.time() - start_time
+                logger.info(f"✅ RETRY SUCCESS: {self.name} completed after {retry_elapsed:.2f}s on retry")
+
+                raw_output = retry_response.json().get("response", "")
+                if use_trustcall and self.expected_schema:
+                    validated_json = self._validate_with_trustcall(raw_output, prompt, system_prompt)
+                    return validated_json
+                else:
+                    standardized = standardize_to_json(self.name, raw_output)
+                    if routing_metadata:
+                        standardized.update(routing_metadata)
+                    return standardized
+            except Exception as retry_error:
+                logger.error(f"❌ RETRY FAILED: {self.name} failed on retry: {retry_error}")
+                self.execution_time = elapsed
+                return {
+                    "agent": self.name,
+                    "status": "error",
+                    "format": "text",
+                    "data": {"error": f"Request timed out after {elapsed:.2f}s (retry also failed)"}
+                }
 
         except requests.exceptions.ConnectionError as e:
             elapsed = time.time() - start_time

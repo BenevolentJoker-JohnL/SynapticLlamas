@@ -10,6 +10,9 @@ sollol_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'SO
 if sollol_path not in sys.path:
     sys.path.insert(0, sollol_path)
 
+# Set SOLLOL context size for coordinator (8192 for long-form generation)
+os.environ['SOLLOL_CTX_SIZE'] = '8192'
+
 # Configure logging to match SOLLOL format BEFORE any imports that use logging
 logging.basicConfig(
     level=logging.INFO,
@@ -377,51 +380,63 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
     print_welcome()
 
-    # Auto-load previously discovered nodes
-    if os.path.exists(NODES_CONFIG_PATH):
-        try:
-            global_registry.load_config(NODES_CONFIG_PATH)
-            node_count = len(global_registry.nodes)
-            if node_count > 0:
-                print_success(f"Auto-loaded {node_count} node(s) from previous session")
-        except Exception as e:
-            logger.warning(f"Failed to auto-load nodes: {e}")
-
-    # Auto-discover Ollama nodes if in distributed mode
+    # Handle node discovery based on mode
     if current_mode == "distributed":
+        # DISTRIBUTED MODE: SOLLOL auto-discovery is PRIMARY
+        # (Config file only used as fallback if discovery fails)
         try:
-            from sollol import discover_ollama_nodes
-            logger.info("🔍 Auto-discovering known Ollama nodes (using SOLLOL)...")
+            logger.info("🔍 Auto-discovering Ollama nodes on network (full subnet scan)...")
             initial_count = len(global_registry.nodes)
 
-            # Use SOLLOL's fast discovery (env vars + localhost)
-            discovered_nodes = discover_ollama_nodes(
-                timeout=1.0,
-                exclude_localhost=False,
-                auto_resolve_docker=True
-            )
+            # Use NodeRegistry's intelligent auto-discovery (FULL network scan)
+            # This scans the entire subnet for ALL Ollama nodes (including remote machines)
+            discovered_count = global_registry.discover_and_add_nodes(timeout=0.5)
 
-            # Add discovered nodes to registry
-            for node_info in discovered_nodes:
-                url = f"http://{node_info['host']}:{node_info['port']}"
-                try:
-                    global_registry.add_node(url, auto_probe=True)
-                except Exception as e:
-                    logger.debug(f"Failed to add {url}: {e}")
-
-            discovered_count = len(global_registry.nodes) - initial_count
             if discovered_count > 0:
-                print_success(f"Auto-discovered {discovered_count} additional Ollama node(s)")
-                # Save updated node list
+                print_success(f"Auto-discovered {discovered_count} Ollama node(s) on network")
+                # Save discovered nodes (auto-discovery is PRIMARY)
                 global_registry.save_config(NODES_CONFIG_PATH)
+            elif discovered_count == 0:
+                logger.warning("⚠️  No nodes discovered on network")
+                # Fallback: try loading config file as backup
+                if os.path.exists(NODES_CONFIG_PATH):
+                    logger.info("Falling back to config file...")
+                    global_registry.load_config(NODES_CONFIG_PATH)
 
-            # Hint to user about network scanning
-            if len(global_registry.nodes) <= 1:
-                logger.info(f"💡 Only localhost found. Use 'discover' or set OLLAMA_NODES env var for network nodes")
+            # Show total nodes available
+            total_nodes = len(global_registry.nodes)
+            logger.info(f"✅ Total Ollama nodes available: {total_nodes}")
 
-            logger.info(f"✅ Total Ollama nodes available: {len(global_registry.nodes)}")
+            # Show locality info if multiple nodes
+            if total_nodes > 1:
+                # Use SOLLOL to check locality
+                from sollol.pool import OllamaPool
+                ollama_nodes = [
+                    {"host": node.url.split('://')[1].split(':')[0],
+                     "port": node.url.split(':')[-1]}
+                    for node in global_registry.nodes.values()
+                ]
+                temp_pool = OllamaPool(nodes=ollama_nodes, register_with_dashboard=False)
+                unique_hosts = temp_pool.count_unique_physical_hosts()
+
+                if unique_hosts >= 2:
+                    logger.info(f"✅ {unique_hosts} physical machines detected - parallel mode will be enabled")
+                else:
+                    logger.info(f"ℹ️  All {total_nodes} nodes on same machine - parallel mode will be disabled (resource contention)")
+
         except Exception as e:
             logger.warning(f"Ollama node auto-discovery failed: {e}")
+
+    else:
+        # STANDARD MODE: Use config file if available
+        if os.path.exists(NODES_CONFIG_PATH):
+            try:
+                global_registry.load_config(NODES_CONFIG_PATH)
+                node_count = len(global_registry.nodes)
+                if node_count > 0:
+                    print_success(f"Loaded {node_count} node(s) from config")
+            except Exception as e:
+                logger.warning(f"Failed to load nodes config: {e}")
 
     # Initialize based on mode
     def ensure_orchestrator():
@@ -437,7 +452,8 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                     use_flockparser=flockparser_enabled,
                     enable_distributed_inference=model_sharding_enabled,
                     rpc_backends=rpc_backends if model_sharding_enabled else None,
-                    task_distribution_enabled=task_distribution_enabled
+                    task_distribution_enabled=task_distribution_enabled,
+                    coordinator_url=config.get("coordinator_url")
                 )
             return None, global_orchestrator
         else:
@@ -474,6 +490,18 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                 auto_register=True
             )
             logger.info(f"✅ Registered with SOLLOL dashboard: {dashboard_client.app_id}")
+
+            # Show dashboard link to user
+            import requests
+            try:
+                # Check if dashboard is actually running
+                response = requests.get("http://localhost:8080/", timeout=1)
+                if response.status_code == 200:
+                    print_success("📊 SOLLOL Dashboard: http://localhost:8080")
+                    logger.info("   View real-time metrics, node status, and routing decisions")
+            except:
+                # Dashboard not running yet, user can start it with 'dashboard' command
+                logger.debug("Dashboard check failed - may not be running yet")
         except Exception as e:
             logger.debug(f"Dashboard registration failed (dashboard may not be running): {e}")
 
@@ -778,10 +806,16 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                         print("   Model sharding: DISABLED\n")
 
                     elif mode == 'model':
-                        if len(rpc_backends) == 0:
-                            print("⚠️  No RPC backends configured!")
+                        # Allow model sharding if we have RPC backends OR a coordinator URL
+                        has_coordinator = config.get("coordinator_url") is not None
+                        if len(rpc_backends) == 0 and not has_coordinator:
+                            print("⚠️  No RPC backends or coordinator configured!")
                             print("   Use 'rpc discover' or 'rpc add <host:port>' first\n")
+                            print("   Or configure a coordinator URL in config\n")
                         else:
+                            # Add dummy RPC backend if using coordinator
+                            if len(rpc_backends) == 0 and has_coordinator:
+                                rpc_backends = [{"host": "coordinator", "port": 0}]  # Dummy entry
                             task_distribution_enabled = False
                             model_sharding_enabled = True
                             # Note: Using 13B model instead of 70B due to llama.cpp coordinator limitation.
@@ -801,10 +835,16 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             print("   Task distribution: DISABLED\n")
 
                     elif mode == 'both':
-                        if len(rpc_backends) == 0:
-                            print("⚠️  No RPC backends configured for model sharding!")
+                        # Allow model sharding if we have RPC backends OR a coordinator URL
+                        has_coordinator = config.get("coordinator_url") is not None
+                        if len(rpc_backends) == 0 and not has_coordinator:
+                            print("⚠️  No RPC backends or coordinator configured for model sharding!")
                             print("   Use 'rpc discover' or 'rpc add <host:port>' first\n")
+                            print("   Or configure a coordinator URL in config\n")
                         else:
+                            # Add dummy RPC backend if using coordinator
+                            if len(rpc_backends) == 0 and has_coordinator:
+                                rpc_backends = [{"host": "coordinator", "port": 0}]  # Dummy entry
                             task_distribution_enabled = True
                             model_sharding_enabled = True
                             current_model = "llama3.2"  # Small model for phases 1-3
@@ -1107,6 +1147,25 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
             # Node management commands
             elif command == 'nodes':
+                # Show coordinator status if in RPC sharding mode
+                if global_orchestrator and hasattr(global_orchestrator, 'coordinator_manager') and global_orchestrator.coordinator_manager:
+                    print("🎯 COORDINATOR (RPC Model Sharding)")
+                    print("─" * 70)
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    status = loop.run_until_complete(global_orchestrator.coordinator_manager.get_status())
+                    loop.close()
+
+                    coord_status = "✅ HEALTHY" if status['coordinator']['healthy'] else "❌ OFFLINE"
+                    print(f"  URL: {status['coordinator']['url']}")
+                    print(f"  Status: {coord_status}")
+                    if status['coordinator']['pid']:
+                        print(f"  PID: {status['coordinator']['pid']}")
+                    print(f"  Model: {status['model']['name']}")
+                    print(f"  RPC Backends: {len(status['rpc_backends'])} configured")
+                    print()
+
                 # Show Ollama nodes (for task distribution)
                 nodes_list = list(global_registry.nodes.values())
                 if nodes_list:
@@ -1126,33 +1185,47 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
                 # Show RPC backends (for model sharding)
                 print("\n🔗 RPC BACKENDS (Model Sharding - Large Models)")
-                rpc_backends_list = list(global_rpc_registry.backends.values())
-                if rpc_backends_list:
-                    from rich.table import Table
-                    table = Table(box=box.ROUNDED)
-                    table.add_column("Address", style="cyan")
-                    table.add_column("Status", style="green")
-                    table.add_column("Requests", justify="right")
-                    table.add_column("Success Rate", justify="right")
-                    table.add_column("Avg Latency", justify="right")
 
-                    for backend in rpc_backends_list:
-                        status = "✅ HEALTHY" if backend.is_healthy else "❌ OFFLINE"
-                        status_style = "green" if backend.is_healthy else "red"
+                # First check coordinator_manager for backends
+                backends_shown = False
+                if global_orchestrator and hasattr(global_orchestrator, 'coordinator_manager') and global_orchestrator.coordinator_manager:
+                    coord_manager = global_orchestrator.coordinator_manager
+                    if coord_manager.config.rpc_backends and coord_manager.config.rpc_backends != ["coordinator:0"]:
+                        print("   Backends (managed by coordinator):")
+                        for backend_addr in coord_manager.config.rpc_backends:
+                            print(f"      • {backend_addr}")
+                        print()
+                        backends_shown = True
 
-                        table.add_row(
-                            backend.address,
-                            f"[{status_style}]{status}[/{status_style}]",
-                            str(backend.metrics.total_requests),
-                            f"{backend.metrics.success_rate * 100:.1f}%",
-                            f"{backend.metrics.avg_latency:.0f}ms"
-                        )
+                # If not shown from coordinator, check registry
+                if not backends_shown:
+                    rpc_backends_list = list(global_rpc_registry.backends.values())
+                    if rpc_backends_list:
+                        from rich.table import Table
+                        table = Table(box=box.ROUNDED)
+                        table.add_column("Address", style="cyan")
+                        table.add_column("Status", style="green")
+                        table.add_column("Requests", justify="right")
+                        table.add_column("Success Rate", justify="right")
+                        table.add_column("Avg Latency", justify="right")
 
-                    console.print(table)
-                    print()
-                else:
-                    print_warning("No RPC backends configured\n")
-                    print("   Use 'rpc discover' or 'rpc add <host:port>' to add backends\n")
+                        for backend in rpc_backends_list:
+                            status = "✅ HEALTHY" if backend.is_healthy else "❌ OFFLINE"
+                            status_style = "green" if backend.is_healthy else "red"
+
+                            table.add_row(
+                                backend.address,
+                                f"[{status_style}]{status}[/{status_style}]",
+                                str(backend.metrics.total_requests),
+                                f"{backend.metrics.success_rate * 100:.1f}%",
+                                f"{backend.metrics.avg_latency:.0f}ms"
+                            )
+
+                        console.print(table)
+                        print()
+                    else:
+                        print_warning("No RPC backends configured\n")
+                        print("   Use 'rpc discover' or 'rpc add <host:port>' to add backends\n")
 
             elif command == 'add':
                 if len(parts) < 2:
@@ -1366,10 +1439,26 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
 
                 # Debug logging
                 logger.debug(f"DEBUG: markdown_output type: {type(markdown_output)}")
-                logger.debug(f"DEBUG: markdown_output length: {len(str(markdown_output)) if markdown_output else 0}")
-                logger.debug(f"DEBUG: result['result'] keys: {list(result['result'].keys()) if isinstance(result['result'], dict) else 'NOT A DICT'}")
+                logger.debug(f"DEBUG: markdown_output first 200 chars: {str(markdown_output)[:200] if markdown_output else 'EMPTY'}")
+                logger.debug(f"DEBUG: result['result'] type: {type(result['result'])}")
 
-                # If no final_output, try to extract from nested structure
+                # If markdown_output is a dict (shouldn't be but handle it)
+                if isinstance(markdown_output, dict):
+                    logger.warning(f"⚠️  final_output is a dict, attempting extraction")
+                    # Try to extract from dict structure
+                    if 'choices' in markdown_output:
+                        choices = markdown_output['choices']
+                        if isinstance(choices, list) and len(choices) > 0:
+                            markdown_output = choices[0].get('message', {}).get('content', '')
+                    elif 'message' in markdown_output:
+                        markdown_output = markdown_output['message'].get('content', '')
+                    elif 'content' in markdown_output:
+                        markdown_output = markdown_output['content']
+                    else:
+                        # Last resort - convert dict to string
+                        markdown_output = str(markdown_output)
+
+                # If no final_output or not a string, try to extract from nested structure
                 if not markdown_output or not isinstance(markdown_output, str):
                     # Try common response structures
                     result_data = result['result']
@@ -1384,6 +1473,36 @@ def interactive_mode(model="llama3.2", workers=3, distributed=False, use_dask=Fa
                             if 'message' in choice:
                                 markdown_output = choice['message'].get('content', '')
                                 logger.info(f"✅ Extracted content from OpenAI format (length: {len(markdown_output)} chars)")
+
+                # If markdown_output contains JSON wrapped in string, try to extract
+                if isinstance(markdown_output, str) and markdown_output.strip().startswith('{'):
+                    try:
+                        import json
+                        parsed = json.loads(markdown_output)
+                        if isinstance(parsed, dict):
+                            # Try to extract content from JSON
+                            if 'context' in parsed:
+                                markdown_output = parsed['context']
+                                logger.info(f"✅ Extracted 'context' from JSON string (length: {len(markdown_output)} chars)")
+                            elif 'content' in parsed:
+                                markdown_output = parsed['content']
+                                logger.info(f"✅ Extracted 'content' from JSON string (length: {len(markdown_output)} chars)")
+                    except json.JSONDecodeError:
+                        # Not valid JSON, keep as-is
+                        pass
+
+                # Clean up Unicode escape characters and control characters from PDF extraction
+                if isinstance(markdown_output, str):
+                    import re
+                    import unicodedata
+                    # Remove common PDF artifacts and control characters
+                    markdown_output = re.sub(r'\\x[0-9a-fA-F]{2}', '', markdown_output)  # Remove \x1e, \x08, etc.
+                    markdown_output = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', markdown_output)  # Remove control chars
+                    # Normalize Unicode (NFKC removes special spacing chars)
+                    markdown_output = unicodedata.normalize('NFKC', markdown_output)
+                    # Clean up excessive whitespace
+                    markdown_output = re.sub(r'\n{3,}', '\n\n', markdown_output)  # Max 2 newlines
+                    markdown_output = re.sub(r'  +', ' ', markdown_output)  # Multiple spaces to single
 
                 if isinstance(markdown_output, str) and markdown_output:
                     logger.info(f"📄 Displaying markdown panel (length: {len(markdown_output)} chars)")

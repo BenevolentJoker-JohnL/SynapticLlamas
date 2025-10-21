@@ -13,11 +13,22 @@ logger = logging.getLogger(__name__)
 class NodeRegistry:
     """Manages Ollama nodes: discovery, registration, health monitoring."""
 
-    def __init__(self):
+    def __init__(self, auto_discover: bool = False):
+        """
+        Initialize Node Registry.
+
+        Args:
+            auto_discover: If True, automatically discover Ollama nodes on the network
+                          using SOLLOL's intelligent discovery (scans entire subnet)
+        """
         self.nodes: Dict[str, OllamaNode] = {}
         self.clusters: Dict[str, NodeCluster] = {}  # name -> cluster
         self._lock = threading.Lock()
         self._ip_cache: Dict[str, str] = {}  # Cache resolved IPs to avoid duplicate lookups
+
+        # Auto-discover nodes if enabled
+        if auto_discover:
+            self.discover_and_add_nodes()
 
     def _resolve_host_ip(self, url: str) -> str:
         """
@@ -52,17 +63,52 @@ class NodeRegistry:
         """
         Check if this URL points to an already registered node.
 
+        Handles localhost vs real IP deduplication:
+        - localhost:11434 and 10.9.66.154:11434 are duplicates (same machine)
+        - 127.0.0.1 and machine's real IP are duplicates
+
         Args:
             url: URL to check
 
         Returns:
             URL of existing node if duplicate, None otherwise
         """
+        # Extract IP and port from new URL
         new_ip = self._resolve_host_ip(url)
+        new_port = url.split(':')[-1].rstrip('/')  # Get port from URL
+
+        # Normalize localhost IPs to check for same-machine duplicates
+        def normalize_ip(ip: str) -> str:
+            """Convert localhost IPs to actual machine IP for comparison."""
+            if ip.startswith("127.") or ip == "localhost":
+                # This is localhost - get actual machine IP
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("10.255.255.255", 1))
+                    local_ip = s.getsockname()[0]
+                    s.close()
+                    return local_ip
+                except:
+                    return ip
+            return ip
+
+        new_ip_normalized = normalize_ip(new_ip)
 
         for existing_url in self.nodes.keys():
             existing_ip = self._resolve_host_ip(existing_url)
-            if new_ip == existing_ip:
+            existing_port = existing_url.split(':')[-1].rstrip('/')  # Get port from existing URL
+
+            existing_ip_normalized = normalize_ip(existing_ip)
+
+            # Check if BOTH normalized IP and port match
+            # This allows multiple Ollama instances on same machine with different ports
+            # But prevents localhost and real IP from being registered separately
+            if new_ip_normalized == existing_ip_normalized and new_port == existing_port:
+                if new_ip != existing_ip:
+                    logger.info(
+                        f"🔍 Duplicate detected: {url} is same machine as {existing_url} "
+                        f"(both resolve to {new_ip_normalized})"
+                    )
                 return existing_url
 
         return None
@@ -433,6 +479,69 @@ class NodeRegistry:
 
         except Exception as e:
             logger.error(f"Failed to load config: {e}")
+
+    def discover_and_add_nodes(self, timeout: float = 0.5) -> int:
+        """
+        Auto-discover Ollama nodes on the network using SOLLOL's intelligent discovery.
+
+        This scans the entire local subnet for running Ollama instances and adds them
+        to the registry. Uses SOLLOL's fast parallel scanning (~500ms for full subnet).
+
+        Args:
+            timeout: Connection timeout per node (default: 0.5s)
+
+        Returns:
+            Number of nodes discovered and added
+
+        Features:
+            - Full subnet scan (discovers ALL nodes, not just localhost)
+            - Fast parallel scanning (100 workers)
+            - Automatic Docker IP resolution
+            - Deduplication (won't add duplicates)
+        """
+        try:
+            from sollol.discovery import discover_ollama_nodes
+
+            logger.info("🔍 Auto-discovering Ollama nodes on network...")
+
+            # Use SOLLOL's full network scan mode
+            discovered = discover_ollama_nodes(
+                timeout=timeout,
+                exclude_localhost=False,  # Include localhost
+                auto_resolve_docker=True,  # Resolve Docker IPs
+                discover_all_nodes=True    # FULL subnet scan
+            )
+
+            if not discovered:
+                logger.warning("⚠️  No Ollama nodes discovered on network")
+                return 0
+
+            logger.info(f"✅ Discovered {len(discovered)} Ollama node(s):")
+
+            added_count = 0
+            for node_info in discovered:
+                host = node_info['host']
+                port = node_info['port']
+                url = f"http://{host}:{port}"
+
+                # Add to registry (will skip duplicates automatically)
+                try:
+                    node_name = f"ollama-{host.replace('.', '-')}"
+                    self.add_node(url, name=node_name, priority=0, auto_probe=True)
+                    logger.info(f"   • {url} ({node_name})")
+                    added_count += 1
+                except Exception as e:
+                    logger.debug(f"Could not add {url}: {e}")
+
+            logger.info(f"✅ Added {added_count} nodes to registry (skipped {len(discovered) - added_count} duplicates)")
+            return added_count
+
+        except ImportError:
+            logger.error("❌ SOLLOL discovery module not available. Install SOLLOL: pip install -e /home/joker/SOLLOL")
+            return 0
+        except Exception as e:
+            logger.error(f"❌ Auto-discovery failed: {e}")
+            return 0
 
     def __len__(self):
         return len(self.nodes)

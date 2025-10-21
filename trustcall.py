@@ -168,21 +168,52 @@ class TrustCallValidator:
         """Extract JSON from text that may contain markdown or other wrapper."""
         import re
 
-        # Try to find JSON in code blocks
-        code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-        if code_block_match:
-            try:
-                return json.loads(code_block_match.group(1))
-            except:
-                pass
+        # Try to find JSON in code blocks (both ```json and ``` variants)
+        code_block_patterns = [
+            r'```json\s*(\{.*?\})\s*```',
+            r'```\s*(\{.*?\})\s*```',
+        ]
+        for pattern in code_block_patterns:
+            code_block_match = re.search(pattern, text, re.DOTALL)
+            if code_block_match:
+                try:
+                    return json.loads(code_block_match.group(1))
+                except:
+                    pass
 
-        # Try to find raw JSON object
-        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
-        if json_match:
-            try:
-                return json.loads(json_match.group(0))
-            except:
-                pass
+        # Try multiple strategies to find raw JSON object
+        # Strategy 1: Find the first complete { } block
+        stack = []
+        start_idx = None
+        for i, char in enumerate(text):
+            if char == '{':
+                if not stack:
+                    start_idx = i
+                stack.append('{')
+            elif char == '}':
+                if stack:
+                    stack.pop()
+                    if not stack and start_idx is not None:
+                        # Found complete JSON object
+                        try:
+                            return json.loads(text[start_idx:i+1])
+                        except:
+                            # Continue searching for next JSON object
+                            start_idx = None
+
+        # Strategy 2: Try regex patterns of increasing complexity
+        patterns = [
+            r'\{[^{}]*\}',  # Simple object without nesting
+            r'\{(?:[^{}]|\{[^{}]*\})*\}',  # One level of nesting
+            r'\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}',  # Two levels of nesting
+        ]
+        for pattern in patterns:
+            json_match = re.search(pattern, text, re.DOTALL)
+            if json_match:
+                try:
+                    return json.loads(json_match.group(0))
+                except:
+                    pass
 
         return None
 

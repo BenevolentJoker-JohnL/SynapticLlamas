@@ -111,8 +111,9 @@ class CollaborativeWorkflow:
             editor._hybrid_router_sync = self.hybrid_router
             logger.info(f"🔀 Using HybridRouter: {self.model} (phases 1-3) → {self.synthesis_model} (phase 4)")
 
-        # Inject SOLLOL load balancer if available (fallback if no HybridRouter)
-        if self.load_balancer is not None:
+        # Inject SOLLOL load balancer ONLY if HybridRouter is not available
+        # This prevents fallback to Ollama nodes when RPC coordinator is configured
+        elif self.load_balancer is not None:
             researcher._load_balancer = self.load_balancer
             critic._load_balancer = self.load_balancer
             editor._load_balancer = self.load_balancer
