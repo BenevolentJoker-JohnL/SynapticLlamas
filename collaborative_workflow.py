@@ -233,10 +233,39 @@ class CollaborativeWorkflow:
         # Convert JSON to markdown
         markdown_content = json_to_markdown(final_output)
 
+        # PHASE 4.5: Fast Output Validation (rule-based checks)
+        from output_validators import OutputValidator
+        logger.info("🔍 Phase 4.5: Fast Output Validation")
+        validation_result = OutputValidator.validate_output(
+            markdown_content,
+            check_rep=True,
+            check_len=True,
+            check_fmt=True
+        )
+
+        # If validation fails badly, trigger immediate refinement
+        if not validation_result['passed'] and validation_result['score'] < 0.5:
+            logger.warning(f"⚠️  Output validation failed severely (score: {validation_result['score']:.2f})")
+            logger.warning("   Triggering immediate refinement before quality voting")
+
+            # Build refinement prompt based on validation issues
+            validation_feedback = "OUTPUT VALIDATION FAILED\n\nIssues detected:\n"
+            for issue in validation_result['issues']:
+                validation_feedback += f"- {issue}\n"
+
+            validation_feedback += f"\nCurrent output to fix:\n{markdown_content}\n\n"
+            validation_feedback += "Provide an improved version that addresses these specific issues."
+
+            # Re-refine with validation feedback
+            improved_output = editor.process(validation_feedback)
+            markdown_content = json_to_markdown(improved_output)
+            logger.info("✅ Re-refined output based on validation feedback")
+
         # PHASE 5: AST Quality Voting (if enabled)
         quality_retries = 0
         quality_scores = []
         quality_passed = True
+        validation_scores = validation_result  # Store for metrics
 
         if self.enable_ast_voting and self.ast_voting:
             logger.info("🗳️  Phase 5: AST Quality Voting")
@@ -312,7 +341,8 @@ class CollaborativeWorkflow:
                     "issues": s.issues
                 } for s in quality_scores
             ] if quality_scores else None,
-            "quality_passed": quality_passed
+            "quality_passed": quality_passed,
+            "validation_result": validation_scores  # Add validation metrics
         }
 
     def _build_critique_prompt(self, original_query: str, research_output: Dict) -> str:

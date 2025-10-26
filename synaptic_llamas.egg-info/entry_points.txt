@@ -1,3 +1,2 @@
 [console_scripts]
 synaptic-llamas = main:main
-

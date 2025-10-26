@@ -118,9 +118,16 @@ Final Answer:
 Rate the answer on a scale of 0.0 to 1.0 based on:
 1. Accuracy and correctness
 2. Completeness - does it fully answer the query?
-3. Clarity and readability
+3. Clarity and readability (no repetition or rambling)
 4. Structure and organization
-5. Depth and detail
+5. Depth and detail (thorough but concise)
+6. Formatting quality (proper LaTeX, no broken notation like "rac" or "\dotdot")
+
+CRITICAL: Deduct points for:
+- Repetitive content (same ideas restated multiple times)
+- Excessive length or rambling
+- Broken math formatting (missing backslashes, broken brackets)
+- Wall of text without structure
 
 Provide your evaluation in JSON format with:
 - score (float 0.0 to 1.0)

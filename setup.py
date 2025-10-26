@@ -32,7 +32,7 @@ if Path('requirements-dev.txt').exists():
 
 setup(
     name="synaptic-llamas",
-    version="0.1.0",
+    version="0.1.1",
     author="BenevolentJoker-JohnL",
     author_email="benevolentjoker@gmail.com",
     description="Distributed Parallel AI Agent Orchestration with Intelligent Load Balancing - integrates with FlockParser for RAG and SOLLOL for distributed inference",

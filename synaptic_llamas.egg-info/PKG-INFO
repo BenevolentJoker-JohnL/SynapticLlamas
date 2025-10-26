@@ -1,16 +1,16 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: synaptic-llamas
-Version: 0.1.0
-Summary: Distributed Parallel AI Agent Orchestration with Intelligent Load Balancing
+Version: 0.1.1
+Summary: Distributed Parallel AI Agent Orchestration with Intelligent Load Balancing - integrates with FlockParser for RAG and SOLLOL for distributed inference
 Home-page: https://github.com/BenevolentJoker-JohnL/SynapticLlamas
 Author: BenevolentJoker-JohnL
-Author-email: benevolentjoker@gmail.com
-License: UNKNOWN
-Project-URL: Bug Tracker, https://github.com/BenevolentJoker-JohnL/SynapticLlamas/issues
+Author-email: BenevolentJoker-JohnL <benevolentjoker@gmail.com>
+License: MIT
+Project-URL: Homepage, https://github.com/BenevolentJoker-JohnL/SynapticLlamas
 Project-URL: Documentation, https://github.com/BenevolentJoker-JohnL/SynapticLlamas/blob/main/README.md
-Project-URL: Source Code, https://github.com/BenevolentJoker-JohnL/SynapticLlamas
-Keywords: ai llm distributed orchestration load-balancing ollama agents
-Platform: UNKNOWN
+Project-URL: Repository, https://github.com/BenevolentJoker-JohnL/SynapticLlamas
+Project-URL: Bug Tracker, https://github.com/BenevolentJoker-JohnL/SynapticLlamas/issues
+Keywords: ai,llm,distributed,orchestration,load-balancing,ollama,agents,flockparser,sollol,rag,multi-agent
 Classifier: Development Status :: 3 - Alpha
 Classifier: Intended Audience :: Developers
 Classifier: Intended Audience :: Science/Research
@@ -25,7 +25,28 @@ Classifier: Programming Language :: Python :: 3.11
 Classifier: Operating System :: OS Independent
 Requires-Python: >=3.8
 Description-Content-Type: text/markdown
+Requires-Dist: requests>=2.31.0
+Requires-Dist: httpx>=0.24.0
+Requires-Dist: ipaddress>=1.0.23
+Requires-Dist: dask[distributed]>=2024.1.0
+Requires-Dist: rich>=13.7.0
+Requires-Dist: flask
+Requires-Dist: flask-cors
+Requires-Dist: flask-sock
+Requires-Dist: waitress>=3.0.0
+Requires-Dist: asyncio>=3.4.3
+Requires-Dist: sollol>=0.9.31
+Requires-Dist: flockparser>=1.0.4
 Provides-Extra: dev
+Requires-Dist: pytest>=7.4.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.1.0; extra == "dev"
+Requires-Dist: black>=23.0.0; extra == "dev"
+Requires-Dist: isort>=5.12.0; extra == "dev"
+Requires-Dist: mypy>=1.0.0; extra == "dev"
+Requires-Dist: flake8>=6.0.0; extra == "dev"
+Dynamic: author
+Dynamic: home-page
+Dynamic: requires-python
 
 # 🧠 SynapticLlamas
 
@@ -675,7 +696,120 @@ Total time: 3 minutes (consistent)
 
 ---
 
-## FlockParser Integration (Drop-In Replacement)
+## 🔗 Integration with FlockParser & SOLLOL
+
+SynapticLlamas is designed to work seamlessly with **[FlockParser](https://github.com/BenevolentJoker-JohnL/FlockParser)** (document RAG) and **[SOLLOL](https://github.com/BenevolentJoker-JohnL/SOLLOL)** (distributed inference) as a unified AI ecosystem.
+
+### **The Complete Stack**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              SynapticLlamas (v0.1.0+)                       │
+│          Multi-Agent System & Orchestration                 │
+│  • Research agents  • Editor agents  • Storyteller agents  │
+└───────────┬────────────────────────────────────┬───────────┘
+            │                                    │
+            │ RAG Queries                        │ Distributed
+            │ (with pre-computed embeddings)     │ Inference
+            │                                    │
+     ┌──────▼──────────┐              ┌─────────▼────────────┐
+     │  FlockParser    │              │      SOLLOL          │
+     │  API (v1.0.4+)  │              │  Load Balancer       │
+     │  Port: 8000     │              │  (v0.9.31+)          │
+     └─────────────────┘              └──────────────────────┘
+            │                                    │
+            │ ChromaDB                          │ Intelligent
+            │ Vector Store                      │ GPU/CPU Routing
+            │                                    │
+     ┌──────▼──────────┐              ┌─────────▼────────────┐
+     │  Knowledge Base │              │  Ollama Nodes        │
+     │  41 Documents   │              │  (Distributed)       │
+     │  6,141 Chunks   │              │  GPU + CPU           │
+     └─────────────────┘              └──────────────────────┘
+```
+
+### **Why This Integration Matters**
+
+| Component | Role | Key Feature |
+|-----------|------|-------------|
+| **SynapticLlamas** | Multi-Agent Orchestration | Research, Editor, Storyteller agents |
+| **FlockParser** | Document RAG & Knowledge Base | ChromaDB vector store with 6,141+ chunks |
+| **SOLLOL** | Distributed Inference | Load balanced embedding & model inference |
+
+### **Quick Start: Complete Ecosystem**
+
+```bash
+# Install all three packages (auto-installs dependencies)
+pip install synaptic-llamas  # Pulls in flockparser>=1.0.4 and sollol>=0.9.31
+
+# Start FlockParser API (auto-starts with CLI)
+flockparse
+
+# Run SynapticLlamas with FlockParser integration
+synaptic-llamas --interactive --distributed
+```
+
+### **Integration Example: Research Agent with RAG**
+
+```python
+from flockparser_adapter import FlockParserAdapter
+from sollol_load_balancer import SOLLOLLoadBalancer
+from agents.researcher import ResearchAgent
+
+# Initialize SOLLOL for distributed inference
+sollol = SOLLOLLoadBalancer(
+    rpc_backends=["http://gpu-node-1:50052", "http://gpu-node-2:50052"]
+)
+
+# Initialize FlockParser adapter
+flockparser = FlockParserAdapter("http://localhost:8000", remote_mode=True)
+
+# Create research agent with RAG support
+agent = ResearchAgent(sollol_client=sollol, flockparser=flockparser)
+
+# Step 1: Generate embedding using SOLLOL (load balanced!)
+user_query = "What does research say about quantum entanglement?"
+embedding = sollol.generate_embedding(
+    model="mxbai-embed-large",
+    prompt=user_query
+)
+# SOLLOL routes to fastest GPU automatically
+
+# Step 2: Query FlockParser with pre-computed embedding
+rag_results = flockparser.query_remote(
+    query=user_query,
+    embedding=embedding,  # Skip FlockParser's embedding generation
+    n_results=5
+)
+# FlockParser returns relevant chunks from 41 documents
+
+# Step 3: Agent generates research summary using SOLLOL
+summary = agent.research_with_context(
+    query=user_query,
+    context=rag_results  # RAG-enriched context
+)
+
+# Performance gain: 2-5x faster when SOLLOL has faster nodes!
+```
+
+### **What's New in FlockParser v1.0.4**
+
+FlockParser v1.0.4 adds **SynapticLlamas-compatible** public endpoints:
+
+- **`GET /health`** - Check API availability and document count
+- **`GET /stats`** - Get knowledge base statistics (41 docs, 6,141 chunks)
+- **`POST /query`** - Query with pre-computed embeddings (critical for load balanced RAG)
+
+```python
+# New API usage
+response = requests.post("http://localhost:8000/query", json={
+    "query": "quantum entanglement",
+    "embedding": embedding_vector,  # Pre-computed by SOLLOL
+    "n_results": 5
+})
+```
+
+### **Drop-In Integration**
 
 SynapticLlamas can replace FlockParser's load balancer with **zero code changes**:
 
@@ -694,7 +828,11 @@ load_balancer.embed_distributed(model, text)  # Uses SOLLOL + GPU control
 - Intelligent routing under the hood
 - Performance tracking and learning
 
-See [FLOCKPARSER_INTEGRATION.md](FLOCKPARSER_INTEGRATION.md) for details.
+📚 **[Complete Integration Guide →](https://github.com/BenevolentJoker-JohnL/FlockParser/blob/main/INTEGRATION_WITH_SYNAPTICLLAMAS.md)**
+
+**Related Projects:**
+- **[FlockParser](https://github.com/BenevolentJoker-JohnL/FlockParser)** - Document RAG Intelligence
+- **[SOLLOL](https://github.com/BenevolentJoker-JohnL/SOLLOL)** - Distributed Inference Platform
 
 ---
 
@@ -797,5 +935,3 @@ This project adheres to a [Code of Conduct](CODE_OF_CONDUCT.md).
 ## License
 
 MIT
-
-
