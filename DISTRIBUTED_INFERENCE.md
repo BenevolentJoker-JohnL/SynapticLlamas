@@ -1,5 +1,20 @@
 # Distributed Inference with SOLLOL
 
+> **⚠️ EXPERIMENTAL FEATURE**
+>
+> **Status**: Experimental - Research & Development
+>
+> Model sharding via llama.cpp RPC is currently in experimental stage. While the implementation is functional for testing and validation, it requires additional development, testing, and performance optimization before being recommended for production use.
+>
+> **Current State**:
+> - ✅ Functional for 13B models across 2-3 nodes (verified)
+> - ⚠️ Requires further testing for larger models (70B+)
+> - ⚠️ Performance characteristics still being evaluated
+> - ⚠️ Network overhead and latency need optimization
+>
+> **Use For**: Testing, research, development, and validation purposes
+> **Not Recommended For**: Production workloads without extensive testing
+
 **Layer-level model sharding for local LLM clusters.**
 
 SOLLOL combines Ollama's model management with llama.cpp's RPC protocol to enable running larger models across multiple consumer machines.

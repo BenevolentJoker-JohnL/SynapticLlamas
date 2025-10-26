@@ -1,5 +1,9 @@
 # Model Sharding Complete - Summary
 
+> **⚠️ EXPERIMENTAL FEATURE - FOR TESTING & VALIDATION**
+>
+> This document describes experimental model sharding capabilities. While functional for development and testing, this feature requires further optimization and validation before production deployment.
+
 ## Achievement Unlocked: Proven Model Sharding Across 4 RPC Backends
 
 ### What Was Accomplished

@@ -1,5 +1,9 @@
 # llama.cpp Distributed Inference Integration
 
+> **⚠️ EXPERIMENTAL FEATURE**
+>
+> llama.cpp RPC integration for model sharding is experimental. While functional for testing with 13B models, it requires further development and validation for production use. See [EXPERIMENTAL_NOTICE.md](EXPERIMENTAL_NOTICE.md) for details.
+
 **FULLY INTEGRATED into SynapticLlamas** ✅
 
 SynapticLlamas now supports layer-level model sharding using llama.cpp RPC for models that don't fit on a single GPU (verified with 13B models across 2-3 nodes), while maintaining Ollama compatibility for smaller models.

@@ -40,6 +40,8 @@ response = client.chat("llama3.2", "Summarize quantum computing")
 
 ### 🚀 NEW: llama.cpp Model Sharding - INTEGRATED
 
+> **⚠️ EXPERIMENTAL FEATURE**: Model sharding is currently in experimental stage. While functional for testing and validation, it requires further development and testing for production use. Performance characteristics and reliability are still being evaluated. Use for research and development purposes.
+
 **Run larger models across multiple machines.**
 
 SynapticLlamas integrates llama.cpp RPC for layer-level model sharding, enabling inference on models that don't fit on a single GPU (verified with 13B models across 2-3 nodes).
